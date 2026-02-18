@@ -5,12 +5,19 @@ const path = require('path');
 // Initialize database (creates tables on first run)
 const db = require('./config/database');
 
+// Auto-seed if the database is empty (e.g. first deploy)
+const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get();
+if (userCount.count === 0) {
+  console.log('Empty database detected — running seed...');
+  require('./seed/mockData');
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:3001', 'http://localhost:3000', 'http://localhost:5173', '*'],
+  origin: '*',
   credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
