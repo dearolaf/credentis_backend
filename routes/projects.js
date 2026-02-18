@@ -328,4 +328,36 @@ router.get('/:projectId/workers', authenticate, (req, res) => {
   }
 });
 
+/**
+ * DELETE /api/projects/:id - Delete a project (client owner only)
+ */
+router.delete('/:id', authenticate, (req, res) => {
+  try {
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
+    if (!project) return apiResponse(res, 404, null, 'Project not found');
+    if (project.client_id !== req.user.id) return apiResponse(res, 403, null, 'Only the project owner can delete this project');
+
+    const deleteTransaction = db.transaction(() => {
+      db.prepare('DELETE FROM project_assignments WHERE project_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM project_delegations WHERE project_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM projects WHERE id = ?').run(req.params.id);
+    });
+    deleteTransaction();
+
+    // Audit
+    const auditId = uuidv4();
+    const blockchainResult = MockBlockchain.anchorData({ action: 'project_deleted', projectId: req.params.id });
+    db.prepare(`
+      INSERT INTO audit_log (id, actor_id, action, entity_type, entity_id, details, blockchain_tx, hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(auditId, req.user.id, 'project_deleted', 'project', req.params.id,
+      JSON.stringify({ title: project.title }), blockchainResult.transactionId, blockchainResult.dataHash);
+
+    return apiResponse(res, 200, null, 'Project deleted successfully');
+  } catch (error) {
+    console.error('Delete project error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
 module.exports = router;
