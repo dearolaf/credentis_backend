@@ -148,10 +148,12 @@ router.get('/workers', authenticate, requireRole('client', 'contractor', 'subcon
       });
 
       if (project_id) {
-        const darReqs = db.prepare('SELECT id, label FROM project_dar_requirements WHERE project_id = ?').all(project_id);
+        const darReqs = db.prepare('SELECT id, label, requirement_key FROM project_dar_requirements WHERE project_id = ?').all(project_id);
         for (const dr of darReqs) {
-          const sat = db.prepare('SELECT status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(worker.id, dr.id);
-          if (!sat || sat.status !== 'satisfied') {
+          const isRtw = dr.requirement_key === 'rtw';
+          const rtwSatisfied = isRtw && !!worker.is_verified;
+          const otherSatisfied = !isRtw && (() => { const sat = db.prepare('SELECT status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(worker.id, dr.id); return sat && sat.status === 'satisfied'; })();
+          if (!rtwSatisfied && !otherSatisfied) {
             complianceStatus = 'non_compliant';
             issues.push(`Missing DAR: ${dr.label}`);
           }

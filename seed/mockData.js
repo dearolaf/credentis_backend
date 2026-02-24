@@ -233,17 +233,20 @@ assignmentData();
 console.log(`✓ Created ${workerAssignments.length} worker-project assignments`);
 
 // ===== CREDENTIALS =====
+// Irish construction and data centre context: SOLAS, HSA, ESB, QQI, Irish institutions only.
 const credentialTypes = [
-  { type: 'SafePass', title: 'SafePass Card', issuer: 'SOLAS Ireland' },
-  { type: 'CSCS', title: 'CSCS Card', issuer: 'CITB UK' },
-  { type: 'ArcFlash', title: 'Arc Flash Awareness Certificate', issuer: 'ESB Training' },
-  { type: 'FirstAid', title: 'First Aid Certificate', issuer: 'Red Cross' },
-  { type: 'ManualHandling', title: 'Manual Handling Certificate', issuer: 'IOSH' },
-  { type: 'WorkingAtHeights', title: 'Working at Heights Certificate', issuer: 'IPAF' },
-  { type: 'ConfinedSpace', title: 'Confined Space Entry Certificate', issuer: 'City & Guilds' },
-  { type: 'ElectricalSafety', title: 'Electrical Safety Certificate', issuer: 'NICEIC' },
-  { type: 'AsbestosAwareness', title: 'Asbestos Awareness Certificate', issuer: 'UKATA' },
-  { type: 'FireMarshal', title: 'Fire Marshal Certificate', issuer: 'NFPA' },
+  { type: 'SafePass', title: 'SafePass Card', issuer: 'SOLAS' },
+  { type: 'ManualHandling', title: 'Manual Handling Certificate', issuer: 'SOLAS / HSA' },
+  { type: 'WorkingAtHeights', title: 'Working at Heights Certificate', issuer: 'IPAF Ireland' },
+  { type: 'ArcFlash', title: 'Arc Flash Awareness Certificate', issuer: 'ESB Networks' },
+  { type: 'FirstAid', title: 'First Aid at Work Certificate', issuer: 'Irish Red Cross' },
+  { type: 'FireSafety', title: 'Fire Safety Awareness Certificate', issuer: 'HSA' },
+  { type: 'ConfinedSpace', title: 'Confined Space Entry Certificate', issuer: 'SOLAS' },
+  { type: 'ElectricalSafety', title: 'Electrical Safety Certificate', issuer: 'Safe Electric (RECI)' },
+  { type: 'AsbestosAwareness', title: 'Asbestos Awareness Certificate', issuer: 'HSA' },
+  { type: 'QQI_L5_Scaffolding', title: 'QQI Level 5 Scaffolding', issuer: 'QQI' },
+  { type: 'QQI_L6_Electrical', title: 'QQI Level 6 Electrical Apprenticeship', issuer: 'QQI' },
+  { type: 'BEng_Electrical', title: 'BEng Electrical Engineering', issuer: 'TU Dublin' },
 ];
 
 const insertCredential = db.prepare(`
@@ -252,21 +255,29 @@ const insertCredential = db.prepare(`
 `);
 
 let credCount = 0;
+const sean = users.workers[0]; // Sean Murphy – demo professional who submits BEng & QQI L6 Electrical Apprenticeship to verify
+
 const insertCredentials = db.transaction(() => {
   users.workers.forEach(worker => {
-    // Each worker gets 3-6 credentials
-    const numCreds = 3 + Math.floor(Math.random() * 4);
-    const selectedCreds = [...credentialTypes].sort(() => Math.random() - 0.5).slice(0, numCreds);
+    let selectedCreds;
+    if (worker.id === sean.id) {
+      // Sean: fixed set so he can verify with BEng + QQI L6 Electrical Apprenticeship (and EHS minimum)
+      selectedCreds = credentialTypes.filter(c =>
+        ['SafePass', 'ManualHandling', 'WorkingAtHeights', 'BEng_Electrical', 'QQI_L6_Electrical'].includes(c.type)
+      );
+    } else {
+      const numCreds = 3 + Math.floor(Math.random() * 4);
+      selectedCreds = [...credentialTypes].sort(() => Math.random() - 0.5).slice(0, numCreds);
+    }
 
     selectedCreds.forEach(cred => {
       const issueDate = new Date(2024, Math.floor(Math.random() * 12), Math.floor(Math.random() * 28) + 1);
-      // Some expired, some expiring soon, most valid
       let expiryDate;
       const rand = Math.random();
       if (rand < 0.1) {
         expiryDate = new Date(2025, Math.floor(Math.random() * 12), 15); // Expired
       } else if (rand < 0.25) {
-        expiryDate = new Date(2026, 2, Math.floor(Math.random() * 28) + 1); // Expiring soon (within 30 days of Feb 2026)
+        expiryDate = new Date(2026, 2, Math.floor(Math.random() * 28) + 1); // Expiring soon
       } else {
         expiryDate = new Date(2027, Math.floor(Math.random() * 12), 15); // Valid
       }
@@ -282,7 +293,7 @@ const insertCredentials = db.transaction(() => {
   });
 });
 insertCredentials();
-console.log(`✓ Created ${credCount} credentials across ${users.workers.length} workers`);
+console.log(`✓ Created ${credCount} credentials across ${users.workers.length} workers (Sean has BEng + QQI L6 Electrical Apprenticeship for verification)`);
 
 // ===== BADGES =====
 const badgeTypes = [
@@ -440,8 +451,8 @@ const insertDAR = db.prepare(`
 `);
 let darOrder = 0;
 // Client (HyperDC) – base requirements
-insertDAR.run(uuidv4(), vp.id, client.id, 'rtw', 'Right-to-Work status (passport + RTW check)', ++darOrder);
-// Contractor (BuildRight) – site safety
+insertDAR.run(uuidv4(), vp.id, client.id, 'rtw', 'Right-to-Work status (from identity verification – passport not shared)', ++darOrder);
+// Contractor (BuildRight) – EHS compliance (minimum: SafePass, Manual Handling, Working at Height)
 insertDAR.run(uuidv4(), vp.id, contractor.id, 'safepass', 'SafePass', ++darOrder);
 insertDAR.run(uuidv4(), vp.id, contractor.id, 'manual_handling', 'Manual Handling', ++darOrder);
 insertDAR.run(uuidv4(), vp.id, contractor.id, 'working_at_heights', 'Working at Heights', ++darOrder);
@@ -489,11 +500,11 @@ console.log('\n========================================');
 console.log('  Mock data seeding complete!');
 console.log('========================================');
 console.log('\nTest Accounts (password for all: Password123!):');
-console.log(`  Client:        client@energycorp.ie`);
-console.log(`  Client (DE):   client@infradev.de`);
-console.log(`  Contractor:    contractor@buildright.ie`);
-console.log(`  Contractor:    contractor@euroworks.pl`);
-console.log(`  Subcontractor: sub@elecspec.ie`);
+console.log('  Scenario: HyperDC Co → 24MW VP → BuildRight → ElecSpec / Sticks and Planks');
+console.log(`  Client:        client@hyperdc.co (HyperDC Co)`);
+console.log(`  Contractor:    contractor@buildright.ie (BuildRight Construction Ltd)`);
+console.log(`  Subcontractor: sub@elecspec.ie (ElecSpec Electrical)`);
+console.log(`  Subcontractor: sub@sticksandplanks.ie (Sticks and Planks Scaffolding)`);
 console.log(`  Professional:  sean.murphy@email.ie`);
 console.log(`  Professional:  piotr.kowalski@email.pl`);
 console.log(`  Professional:  andrei.popescu@email.ro`);

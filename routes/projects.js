@@ -327,15 +327,20 @@ router.put('/:projectId/assignments/:assignmentId/endorse', authenticate, requir
     if (!project) return apiResponse(res, 404, null, 'Project not found');
 
     // Block endorsement if worker has not satisfied all DAR requirements for this project
-    const darRequirements = db.prepare('SELECT id, label FROM project_dar_requirements WHERE project_id = ?').all(project.id);
+    const worker = db.prepare('SELECT * FROM users WHERE id = ?').get(assignment.worker_id);
+    const darRequirements = db.prepare('SELECT id, label, requirement_key FROM project_dar_requirements WHERE project_id = ?').all(project.id);
     for (const darReq of darRequirements) {
+      if (darReq.requirement_key === 'rtw') {
+        if (!worker?.is_verified) {
+          return apiResponse(res, 400, null, 'Cannot endorse: Right-to-Work status is required (from identity verification). The professional must complete passport and biometric verification; the client sees RTW status only – the passport is not shared.');
+        }
+        continue;
+      }
       const sat = db.prepare('SELECT status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(assignment.worker_id, darReq.id);
       if (!sat || sat.status !== 'satisfied') {
         return apiResponse(res, 400, null, `Cannot endorse: professional has not satisfied all DAR requirements (e.g. ${darReq.label}). They must complete the Data Access Requirements for this project first.`);
       }
     }
-
-    const worker = db.prepare('SELECT * FROM users WHERE id = ?').get(assignment.worker_id);
     
     const vcResult = MockBlockchain.createVC(
       'ProjectParticipationCredential',

@@ -36,12 +36,20 @@ router.get('/my-requirements', authenticate, requireRole('worker'), (req, res) =
     `).all(req.user.id, projectId);
     const satisfactionByReq = Object.fromEntries(satisfactions.map(s => [s.dar_requirement_id, s]));
 
-    const list = requirements.map(r => ({
-      ...r,
-      my_status: satisfactionByReq[r.id]?.status || 'pending',
-      credential_id: satisfactionByReq[r.id]?.credential_id,
-      submitted_at: satisfactionByReq[r.id]?.submitted_at,
-    }));
+    const worker = db.prepare('SELECT is_verified FROM users WHERE id = ?').get(req.user.id);
+    const isVerified = !!worker?.is_verified;
+
+    const list = requirements.map(r => {
+      const fromTable = satisfactionByReq[r.id]?.status || 'pending';
+      const isRtw = r.requirement_key === 'rtw';
+      const myStatus = isRtw ? (isVerified ? 'satisfied' : fromTable) : fromTable;
+      return {
+        ...r,
+        my_status: myStatus,
+        credential_id: satisfactionByReq[r.id]?.credential_id,
+        submitted_at: satisfactionByReq[r.id]?.submitted_at,
+      };
+    });
 
     const allSatisfied = list.length > 0 && list.every(i => i.my_status === 'satisfied');
 
@@ -54,28 +62,37 @@ router.get('/my-requirements', authenticate, requireRole('worker'), (req, res) =
 
 /**
  * POST /api/dar/satisfy - Submit credential / evidence for a DAR requirement (worker)
+ * For RTW (requirement_key 'rtw'): no credential needed – status comes from identity verification; passport is not shared.
  */
 router.post('/satisfy', authenticate, requireRole('worker'), (req, res) => {
   try {
     const { project_id, dar_requirement_id, credential_id } = req.body;
     if (!project_id || !dar_requirement_id) return apiResponse(res, 400, null, 'project_id and dar_requirement_id required');
 
-    const requirement = db.prepare('SELECT id, project_id FROM project_dar_requirements WHERE id = ? AND project_id = ?').get(dar_requirement_id, project_id);
+    const requirement = db.prepare('SELECT id, project_id, requirement_key FROM project_dar_requirements WHERE id = ? AND project_id = ?').get(dar_requirement_id, project_id);
     if (!requirement) return apiResponse(res, 404, null, 'DAR requirement not found');
 
+    if (requirement.requirement_key === 'rtw') {
+      const worker = db.prepare('SELECT is_verified FROM users WHERE id = ?').get(req.user.id);
+      if (!worker?.is_verified) {
+        return apiResponse(res, 400, null, 'Right-to-Work status is evidenced by identity verification. Complete passport and biometric verification in the app first; the client will see your RTW status only – your passport is not shared.');
+      }
+      // No credential_id for RTW – client sees status from verification only
+    }
+
     const existing = db.prepare('SELECT id, status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(req.user.id, dar_requirement_id);
-    const now = new Date().toISOString();
+    const credId = requirement.requirement_key === 'rtw' ? null : (credential_id || null);
 
     if (existing) {
       db.prepare(`
         UPDATE worker_dar_satisfaction SET status = 'satisfied', credential_id = ?, submitted_at = datetime('now') WHERE id = ?
-      `).run(credential_id || null, existing.id);
+      `).run(credId, existing.id);
     } else {
       const id = uuidv4();
       db.prepare(`
         INSERT INTO worker_dar_satisfaction (id, worker_id, project_id, dar_requirement_id, status, credential_id, submitted_at)
         VALUES (?, ?, ?, ?, 'satisfied', ?, datetime('now'))
-      `).run(id, req.user.id, project_id, dar_requirement_id, credential_id || null);
+      `).run(id, req.user.id, project_id, dar_requirement_id, credId);
     }
 
     return apiResponse(res, 200, { dar_requirement_id, status: 'satisfied' }, 'Requirement marked as satisfied');

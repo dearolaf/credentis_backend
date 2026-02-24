@@ -24,6 +24,20 @@ router.get('/', authenticate, (req, res) => {
       SELECT * FROM credentials WHERE worker_id = ? ORDER BY created_at DESC
     `).all(workerId);
 
+    // Which DAR requirements does each credential satisfy? (professional/academic quals as VCs, visible up the chain)
+    const darSatisfactions = db.prepare(`
+      SELECT wds.credential_id, wds.project_id, d.label as requirement_label, p.title as project_title
+      FROM worker_dar_satisfaction wds
+      JOIN project_dar_requirements d ON d.id = wds.dar_requirement_id
+      JOIN projects p ON p.id = wds.project_id
+      WHERE wds.worker_id = ? AND wds.credential_id IS NOT NULL AND wds.status = 'satisfied'
+    `).all(workerId);
+    const darByCredId = {};
+    darSatisfactions.forEach(row => {
+      if (!darByCredId[row.credential_id]) darByCredId[row.credential_id] = [];
+      darByCredId[row.credential_id].push({ project_title: row.project_title, requirement_label: row.requirement_label });
+    });
+
     // Get worker's project assignments to associate credentials with projects
     const assignments = db.prepare(`
       SELECT pa.project_id, p.title as project_title, pa.status
@@ -47,6 +61,7 @@ router.get('/', authenticate, (req, res) => {
         compliance_status: compliance,
         project_id: assignment ? assignment.project_id : null,
         project_title: assignment ? assignment.project_title : null,
+        dar_satisfies: darByCredId[cred.id] || [],
       };
     });
 
