@@ -126,7 +126,7 @@ router.get('/workers', authenticate, requireRole('client', 'contractor', 'subcon
       `).all();
     }
 
-    // Enrich with credential status
+    // Enrich with credential status and DAR (when project_id is set)
     const enrichedWorkers = workers.map(worker => {
       const credentials = db.prepare('SELECT * FROM credentials WHERE worker_id = ?').all(worker.id);
       const badges = db.prepare('SELECT COUNT(*) as count FROM badges WHERE worker_id = ?').get(worker.id);
@@ -147,6 +147,17 @@ router.get('/workers', authenticate, requireRole('client', 'contractor', 'subcon
         }
       });
 
+      if (project_id) {
+        const darReqs = db.prepare('SELECT id, label FROM project_dar_requirements WHERE project_id = ?').all(project_id);
+        for (const dr of darReqs) {
+          const sat = db.prepare('SELECT status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(worker.id, dr.id);
+          if (!sat || sat.status !== 'satisfied') {
+            complianceStatus = 'non_compliant';
+            issues.push(`Missing DAR: ${dr.label}`);
+          }
+        }
+      }
+
       return {
         ...worker,
         credentialCount: credentials.length,
@@ -159,6 +170,107 @@ router.get('/workers', authenticate, requireRole('client', 'contractor', 'subcon
     return apiResponse(res, 200, enrichedWorkers, 'Professional compliance data');
   } catch (error) {
     console.error('Professional compliance error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * GET /api/compliance/escalated - Compliance issues that escalate up the chain (red at sub → visible to contractor → client)
+ * Query: project_id (optional). Returns issues with source_tier (subcontractor/contractor), so red at bottom is visible at top.
+ */
+router.get('/escalated', authenticate, requireRole('client', 'contractor', 'subcontractor', 'admin'), (req, res) => {
+  try {
+    const { project_id } = req.query;
+    let projectIds = [];
+
+    if (req.user.role === 'client') {
+      projectIds = project_id
+        ? (db.prepare('SELECT id FROM projects WHERE id = ? AND client_id = ?').get(project_id, req.user.id) ? [project_id] : [])
+        : db.prepare('SELECT id FROM projects WHERE client_id = ?').pluck().all(req.user.id);
+    } else if (req.user.role === 'admin') {
+      projectIds = project_id ? [project_id] : db.prepare('SELECT id FROM projects').pluck().all();
+    } else {
+      projectIds = db.prepare('SELECT project_id FROM project_delegations WHERE delegatee_id = ? AND status = ?').pluck().all(req.user.id, 'approved');
+      if (project_id) projectIds = projectIds.filter(id => id === project_id);
+    }
+
+    const issues = [];
+    for (const pid of projectIds) {
+      const project = db.prepare('SELECT id, title FROM projects WHERE id = ?').get(pid);
+      if (!project) continue;
+      const assignments = db.prepare(`
+        SELECT pa.id as assignment_id, pa.worker_id, pa.assigned_by, pa.created_at,
+          u.first_name || ' ' || u.last_name as worker_name,
+          assigner.role as source_role, assigner.company_name as source_entity_name
+        FROM project_assignments pa
+        JOIN users u ON u.id = pa.worker_id
+        JOIN users assigner ON assigner.id = pa.assigned_by
+        WHERE pa.project_id = ? AND pa.status IN ('pending', 'approved', 'active')
+      `).all(pid);
+
+      for (const a of assignments) {
+        const sourceTier = a.source_role === 'subcontractor' ? 'subcontractor' : a.source_role === 'contractor' ? 'contractor' : 'client';
+        if (req.user.role === 'subcontractor' && a.assigned_by !== req.user.id) continue;
+
+        const darReqs = db.prepare('SELECT id, label FROM project_dar_requirements WHERE project_id = ?').all(pid);
+        let darMissing = [];
+        for (const dr of darReqs) {
+          const sat = db.prepare('SELECT status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(a.worker_id, dr.id);
+          if (!sat || sat.status !== 'satisfied') darMissing.push(dr.label);
+        }
+        if (darMissing.length > 0) {
+          const created = new Date(a.created_at).getTime();
+          const unresolved_over_24h = (Date.now() - created) > 24 * 60 * 60 * 1000;
+          issues.push({
+            severity: 'red',
+            issue_type: 'dar_unsatisfied',
+            description: `Missing: ${darMissing.join(', ')}`,
+            worker_id: a.worker_id,
+            worker_name: a.worker_name,
+            project_id: pid,
+            project_title: project.title,
+            source_entity_id: a.assigned_by,
+            source_entity_name: a.source_entity_name || 'Unknown',
+            source_tier: sourceTier,
+            assignment_id: a.assignment_id,
+            escalated_to_contractor: true,
+            escalated_to_client: true,
+            unresolved_over_24h,
+          });
+        }
+
+        const credentials = db.prepare('SELECT title, expiry_date FROM credentials WHERE worker_id = ?').all(a.worker_id);
+        for (const c of credentials) {
+          if (!c.expiry_date) continue;
+          const check = mockSafePassCheck(c.expiry_date);
+          if (check.color === 'red') {
+            const created = new Date(a.created_at).getTime();
+            const unresolved_over_24h = (Date.now() - created) > 24 * 60 * 60 * 1000;
+            issues.push({
+              severity: 'red',
+              issue_type: 'credential_expired',
+              description: `${c.title} expired`,
+              worker_id: a.worker_id,
+              worker_name: a.worker_name,
+              project_id: pid,
+              project_title: project.title,
+              source_entity_id: a.assigned_by,
+              source_entity_name: a.source_entity_name || 'Unknown',
+              source_tier: sourceTier,
+              assignment_id: a.assignment_id,
+              escalated_to_contractor: true,
+              escalated_to_client: true,
+              unresolved_over_24h,
+            });
+            break;
+          }
+        }
+      }
+    }
+
+    return apiResponse(res, 200, { issues, by_project: project_id ? undefined : undefined }, 'Escalated compliance issues');
+  } catch (error) {
+    console.error('Escalated compliance error:', error);
     return apiResponse(res, 500, null, 'Internal server error');
   }
 });

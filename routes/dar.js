@@ -1,0 +1,88 @@
+const express = require('express');
+const { v4: uuidv4 } = require('uuid');
+const db = require('../config/database');
+const { authenticate } = require('../middleware/auth');
+const { requireRole } = require('../middleware/rbac');
+const { apiResponse } = require('../utils/helpers');
+
+const router = express.Router();
+
+/**
+ * GET /api/dar/my-requirements?project_id= - Consolidated DAR list for a project with worker's satisfaction status
+ */
+router.get('/my-requirements', authenticate, requireRole('worker'), (req, res) => {
+  try {
+    const projectId = req.query.project_id;
+    if (!projectId) return apiResponse(res, 400, null, 'project_id required');
+
+    const project = db.prepare('SELECT id, title FROM projects WHERE id = ?').get(projectId);
+    if (!project) return apiResponse(res, 404, null, 'Project not found');
+
+    const requirements = db.prepare(`
+      SELECT d.id, d.project_id, d.requirement_key, d.label, d.sort_order,
+        u.role as added_by_role, u.company_name as added_by_company
+      FROM project_dar_requirements d
+      JOIN users u ON u.id = d.added_by_id
+      WHERE d.project_id = ?
+      ORDER BY
+        CASE WHEN u.role = 'client' THEN 1 WHEN u.role = 'contractor' THEN 2 ELSE 3 END,
+        d.sort_order, d.created_at
+    `).all(projectId);
+
+    const satisfactions = db.prepare(`
+      SELECT dar_requirement_id, status, credential_id, submitted_at
+      FROM worker_dar_satisfaction
+      WHERE worker_id = ? AND project_id = ?
+    `).all(req.user.id, projectId);
+    const satisfactionByReq = Object.fromEntries(satisfactions.map(s => [s.dar_requirement_id, s]));
+
+    const list = requirements.map(r => ({
+      ...r,
+      my_status: satisfactionByReq[r.id]?.status || 'pending',
+      credential_id: satisfactionByReq[r.id]?.credential_id,
+      submitted_at: satisfactionByReq[r.id]?.submitted_at,
+    }));
+
+    const allSatisfied = list.length > 0 && list.every(i => i.my_status === 'satisfied');
+
+    return apiResponse(res, 200, { project_id: projectId, project_title: project.title, requirements: list, all_satisfied: allSatisfied }, 'DAR requirements with status');
+  } catch (error) {
+    console.error('Get my-requirements error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * POST /api/dar/satisfy - Submit credential / evidence for a DAR requirement (worker)
+ */
+router.post('/satisfy', authenticate, requireRole('worker'), (req, res) => {
+  try {
+    const { project_id, dar_requirement_id, credential_id } = req.body;
+    if (!project_id || !dar_requirement_id) return apiResponse(res, 400, null, 'project_id and dar_requirement_id required');
+
+    const requirement = db.prepare('SELECT id, project_id FROM project_dar_requirements WHERE id = ? AND project_id = ?').get(dar_requirement_id, project_id);
+    if (!requirement) return apiResponse(res, 404, null, 'DAR requirement not found');
+
+    const existing = db.prepare('SELECT id, status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(req.user.id, dar_requirement_id);
+    const now = new Date().toISOString();
+
+    if (existing) {
+      db.prepare(`
+        UPDATE worker_dar_satisfaction SET status = 'satisfied', credential_id = ?, submitted_at = datetime('now') WHERE id = ?
+      `).run(credential_id || null, existing.id);
+    } else {
+      const id = uuidv4();
+      db.prepare(`
+        INSERT INTO worker_dar_satisfaction (id, worker_id, project_id, dar_requirement_id, status, credential_id, submitted_at)
+        VALUES (?, ?, ?, ?, 'satisfied', ?, datetime('now'))
+      `).run(id, req.user.id, project_id, dar_requirement_id, credential_id || null);
+    }
+
+    return apiResponse(res, 200, { dar_requirement_id, status: 'satisfied' }, 'Requirement marked as satisfied');
+  } catch (error) {
+    console.error('Satisfy DAR error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+module.exports = router;

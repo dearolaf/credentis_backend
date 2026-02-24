@@ -89,11 +89,77 @@ router.get('/:projectId', authenticate, (req, res) => {
 });
 
 /**
+ * GET /api/projects/:projectId/dar - List DAR requirements for project (cascading: client → contractor → subs)
+ */
+router.get('/:projectId/dar', authenticate, (req, res) => {
+  try {
+    const project = db.prepare('SELECT id, client_id FROM projects WHERE id = ?').get(req.params.projectId);
+    if (!project) return apiResponse(res, 404, null, 'Project not found');
+    const canSee = req.user.role === 'admin' || project.client_id === req.user.id ||
+      db.prepare('SELECT 1 FROM project_delegations WHERE project_id = ? AND delegatee_id = ? AND status = ?').get(req.params.projectId, req.user.id, 'approved');
+    if (!canSee) return apiResponse(res, 403, null, 'Access denied');
+
+    const rows = db.prepare(`
+      SELECT d.id, d.project_id, d.added_by_id, d.requirement_key, d.label, d.sort_order, d.created_at,
+        u.role as added_by_role, u.company_name as added_by_company
+      FROM project_dar_requirements d
+      JOIN users u ON u.id = d.added_by_id
+      WHERE d.project_id = ?
+      ORDER BY
+        CASE WHEN u.role = 'client' THEN 1 WHEN u.role = 'contractor' THEN 2 ELSE 3 END,
+        d.sort_order, d.created_at
+    `).all(req.params.projectId);
+    return apiResponse(res, 200, rows, 'DAR requirements retrieved');
+  } catch (error) {
+    console.error('Get DAR error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * POST /api/projects/:projectId/dar - Add DAR requirement (client / contractor / sub by chain of authority)
+ */
+router.post('/:projectId/dar', authenticate, requireRole('client', 'contractor', 'subcontractor', 'admin'), (req, res) => {
+  try {
+    const { requirement_key, label } = req.body;
+    if (!requirement_key || !label) return apiResponse(res, 400, null, 'requirement_key and label required');
+
+    const project = db.prepare('SELECT id, client_id FROM projects WHERE id = ?').get(req.params.projectId);
+    if (!project) return apiResponse(res, 404, null, 'Project not found');
+
+    let canAdd = false;
+    if (req.user.role === 'admin') canAdd = true;
+    else if (req.user.role === 'client' && project.client_id === req.user.id) canAdd = true;
+    else if (req.user.role === 'contractor' || req.user.role === 'subcontractor') {
+      const del = db.prepare('SELECT 1 FROM project_delegations WHERE project_id = ? AND delegatee_id = ? AND status = ?').get(req.params.projectId, req.user.id, 'approved');
+      if (del) canAdd = true;
+    }
+    if (!canAdd) return apiResponse(res, 403, null, 'You cannot add DAR requirements to this project');
+
+    const id = uuidv4();
+    const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 as next_order FROM project_dar_requirements WHERE project_id = ?').get(req.params.projectId);
+    db.prepare(`
+      INSERT INTO project_dar_requirements (id, project_id, added_by_id, requirement_key, label, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, req.params.projectId, req.user.id, requirement_key, label, maxOrder?.next_order || 1);
+
+    const row = db.prepare(`
+      SELECT d.*, u.role as added_by_role, u.company_name as added_by_company
+      FROM project_dar_requirements d JOIN users u ON u.id = d.added_by_id WHERE d.id = ?
+    `).get(id);
+    return apiResponse(res, 201, row, 'DAR requirement added');
+  } catch (error) {
+    console.error('Add DAR error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
  * POST /api/projects - Create a new Verified Project (Client only)
  */
 router.post('/', authenticate, requireRole('client', 'admin'), (req, res) => {
   try {
-    const { title, description, sector, location, country, start_date, end_date, compliance_requirements, privacy_settings, max_workers } = req.body;
+    const { title, description, sector, location, country, start_date, end_date, compliance_requirements, privacy_settings, max_workers, pqq_template_id, pqq_due_days } = req.body;
 
     if (!title) return apiResponse(res, 400, null, 'Project title required');
 
@@ -102,9 +168,9 @@ router.post('/', authenticate, requireRole('client', 'admin'), (req, res) => {
     const privacyJSON = JSON.stringify(privacy_settings || { public: true });
 
     db.prepare(`
-      INSERT INTO projects (id, title, description, client_id, sector, location, country, start_date, end_date, status, compliance_requirements, privacy_settings, max_workers)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
-    `).run(id, title, description, req.user.id, sector || 'construction', location, country || 'Ireland', start_date, end_date, complianceJSON, privacyJSON, max_workers || 100);
+      INSERT INTO projects (id, title, description, client_id, sector, location, country, start_date, end_date, status, compliance_requirements, privacy_settings, max_workers, pqq_template_id, pqq_due_days)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+    `).run(id, title, description, req.user.id, sector || 'construction', location, country || 'Ireland', start_date, end_date, complianceJSON, privacyJSON, max_workers || 100, pqq_template_id || null, pqq_due_days != null ? Number(pqq_due_days) : null);
 
     // Audit
     const auditId = uuidv4();
@@ -113,6 +179,20 @@ router.post('/', authenticate, requireRole('client', 'admin'), (req, res) => {
       INSERT INTO audit_log (id, actor_id, action, entity_type, entity_id, details, blockchain_tx, hash)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(auditId, req.user.id, 'project_created', 'project', id, JSON.stringify({ title, sector }), blockchainResult.transactionId, blockchainResult.dataHash);
+
+    // VP-level DAR: if client sends dar_base (e.g. [{ key: 'rtw', label: 'Right-to-Work...' }]), insert into project_dar_requirements
+    const darBase = req.body.dar_base;
+    if (Array.isArray(darBase) && darBase.length > 0) {
+      const insertDar = db.prepare(`
+        INSERT INTO project_dar_requirements (id, project_id, added_by_id, requirement_key, label, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      darBase.forEach((item, idx) => {
+        if (item && item.key && item.label) {
+          insertDar.run(uuidv4(), id, req.user.id, item.key, item.label, idx + 1);
+        }
+      });
+    }
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
     return apiResponse(res, 201, project, 'Project created successfully');
@@ -243,9 +323,19 @@ router.put('/:projectId/assignments/:assignmentId/endorse', authenticate, requir
     const assignment = db.prepare('SELECT * FROM project_assignments WHERE id = ?').get(assignmentId);
     if (!assignment) return apiResponse(res, 404, null, 'Assignment not found');
 
-    // Create Project Participation VC
-    const worker = db.prepare('SELECT * FROM users WHERE id = ?').get(assignment.worker_id);
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(assignment.project_id);
+    if (!project) return apiResponse(res, 404, null, 'Project not found');
+
+    // Block endorsement if worker has not satisfied all DAR requirements for this project
+    const darRequirements = db.prepare('SELECT id, label FROM project_dar_requirements WHERE project_id = ?').all(project.id);
+    for (const darReq of darRequirements) {
+      const sat = db.prepare('SELECT status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(assignment.worker_id, darReq.id);
+      if (!sat || sat.status !== 'satisfied') {
+        return apiResponse(res, 400, null, `Cannot endorse: professional has not satisfied all DAR requirements (e.g. ${darReq.label}). They must complete the Data Access Requirements for this project first.`);
+      }
+    }
+
+    const worker = db.prepare('SELECT * FROM users WHERE id = ?').get(assignment.worker_id);
     
     const vcResult = MockBlockchain.createVC(
       'ProjectParticipationCredential',

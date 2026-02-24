@@ -49,6 +49,8 @@ db.exec(`
     compliance_requirements TEXT, -- JSON array
     privacy_settings TEXT, -- JSON object
     max_workers INTEGER,
+    pqq_template_id TEXT,
+    pqq_due_days INTEGER,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (client_id) REFERENCES users(id)
@@ -178,21 +180,49 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
 
+  -- PQQ Templates (e.g. 14-section construction PQQ)
+  CREATE TABLE IF NOT EXISTS pqq_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    sections TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  -- PQQ Invitations (client/contractor invites partner to submit PQQ for a VP)
+  CREATE TABLE IF NOT EXISTS pqq_invitations (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    inviter_id TEXT NOT NULL,
+    invitee_id TEXT NOT NULL,
+    pqq_template_id TEXT NOT NULL,
+    due_date TEXT NOT NULL,
+    status TEXT DEFAULT 'invited' CHECK(status IN ('invited', 'submitted', 'under_review', 'approved', 'rejected')),
+    pqq_submission_id TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (project_id) REFERENCES projects(id),
+    FOREIGN KEY (inviter_id) REFERENCES users(id),
+    FOREIGN KEY (invitee_id) REFERENCES users(id),
+    FOREIGN KEY (pqq_template_id) REFERENCES pqq_templates(id)
+  );
+
   -- PQQ (Pre-Qualification Questionnaire)
   CREATE TABLE IF NOT EXISTS pqq_submissions (
     id TEXT PRIMARY KEY,
+    invitation_id TEXT,
     company_id TEXT NOT NULL,
     project_id TEXT,
     submitted_by TEXT NOT NULL,
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'under_review', 'approved', 'rejected', 'expired')),
-    company_profile TEXT, -- JSON
-    financial_status TEXT, -- JSON  
-    compliance_status TEXT, -- JSON
-    documents TEXT, -- JSON array of document refs
+    company_profile TEXT,
+    financial_status TEXT,
+    compliance_status TEXT,
+    documents TEXT,
     reviewed_by TEXT,
     review_notes TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (invitation_id) REFERENCES pqq_invitations(id),
     FOREIGN KEY (company_id) REFERENCES users(id),
     FOREIGN KEY (submitted_by) REFERENCES users(id)
   );
@@ -225,6 +255,55 @@ db.exec(`
     FOREIGN KEY (requester_id) REFERENCES users(id),
     FOREIGN KEY (target_user_id) REFERENCES users(id)
   );
+
+  -- DAR (Data Access Request) – chain of authority: client → contractor → subcontractors
+  CREATE TABLE IF NOT EXISTS project_dar_requirements (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    added_by_id TEXT NOT NULL,
+    requirement_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (project_id) REFERENCES projects(id),
+    FOREIGN KEY (added_by_id) REFERENCES users(id)
+  );
+
+  -- Worker satisfaction of DAR requirements (credentials submitted per requirement)
+  CREATE TABLE IF NOT EXISTS worker_dar_satisfaction (
+    id TEXT PRIMARY KEY,
+    worker_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    dar_requirement_id TEXT NOT NULL,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'satisfied', 'rejected')),
+    credential_id TEXT,
+    submitted_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(worker_id, dar_requirement_id),
+    FOREIGN KEY (worker_id) REFERENCES users(id),
+    FOREIGN KEY (project_id) REFERENCES projects(id),
+    FOREIGN KEY (dar_requirement_id) REFERENCES project_dar_requirements(id),
+    FOREIGN KEY (credential_id) REFERENCES credentials(id)
+  );
 `);
+
+// Migration: add invitation_id to pqq_submissions if table existed before
+try {
+  const cols = db.prepare("PRAGMA table_info(pqq_submissions)").all();
+  if (cols.length && !cols.find(c => c.name === 'invitation_id')) {
+    db.exec('ALTER TABLE pqq_submissions ADD COLUMN invitation_id TEXT');
+  }
+} catch (_) {}
+// Migration: add PQQ fields to projects if missing
+try {
+  let pcols = db.prepare("PRAGMA table_info(projects)").all();
+  if (pcols.length && !pcols.find(c => c.name === 'pqq_template_id')) {
+    db.exec('ALTER TABLE projects ADD COLUMN pqq_template_id TEXT');
+  }
+  pcols = db.prepare("PRAGMA table_info(projects)").all();
+  if (pcols.length && !pcols.find(c => c.name === 'pqq_due_days')) {
+    db.exec('ALTER TABLE projects ADD COLUMN pqq_due_days INTEGER');
+  }
+} catch (_) {}
 
 module.exports = db;

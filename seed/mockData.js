@@ -9,28 +9,66 @@ const MockBlockchain = require('../utils/blockchain');
 console.log('Seeding Credentis database with mock data...\n');
 
 // Clear existing data
-const tables = ['audit_log', 'data_access_requests', 'consent_records', 'tokens', 'awards', 'badges', 'credentials', 'project_assignments', 'project_delegations', 'pqq_submissions', 'projects', 'users'];
+const tables = ['audit_log', 'data_access_requests', 'consent_records', 'tokens', 'awards', 'badges', 'credentials', 'project_assignments', 'project_delegations', 'worker_dar_satisfaction', 'project_dar_requirements', 'pqq_submissions', 'pqq_invitations', 'pqq_templates', 'projects', 'users'];
 tables.forEach(t => db.prepare(`DELETE FROM ${t}`).run());
 
 const passwordHash = bcrypt.hashSync('Password123!', 10);
 
 // ===== USERS =====
+// Investor demo: single end‑to‑end chain around HyperDC Co / 24MW Data Centre – West Dublin
 const users = {
-  // Clients
+  // Clients (only HyperDC Co)
   clients: [
-    { id: uuidv4(), email: 'client@energycorp.ie', role: 'client', first_name: 'Patrick', last_name: 'O\'Brien', phone: '+353-1-555-0101', nationality: 'Irish', company_name: 'EnergyCorp Ireland', company_registration: 'IE-2020-44521' },
-    { id: uuidv4(), email: 'client@infradev.de', role: 'client', first_name: 'Klaus', last_name: 'Weber', phone: '+49-30-555-0201', nationality: 'German', company_name: 'InfraDev GmbH', company_registration: 'DE-HRB-98765' },
+    {
+      id: uuidv4(),
+      email: 'client@hyperdc.co',
+      role: 'client',
+      first_name: 'Patrick',
+      last_name: "O'Brien",
+      phone: '+353-1-555-0101',
+      nationality: 'Irish',
+      company_name: 'HyperDC Co',
+      company_registration: 'IE-2025-44521',
+    },
   ],
-  // Contractors
+  // Contractors (only BuildRight Construction Ltd)
   contractors: [
-    { id: uuidv4(), email: 'contractor@buildright.ie', role: 'contractor', first_name: 'Michael', last_name: 'Fitzgerald', phone: '+353-1-555-0301', nationality: 'Irish', company_name: 'BuildRight Construction', company_registration: 'IE-2018-33210' },
-    { id: uuidv4(), email: 'contractor@euroworks.pl', role: 'contractor', first_name: 'Marek', last_name: 'Nowak', phone: '+48-22-555-0401', nationality: 'Polish', company_name: 'EuroWorks Sp. z o.o.', company_registration: 'PL-KRS-0000567890' },
-    { id: uuidv4(), email: 'contractor@greenbuild.ie', role: 'contractor', first_name: 'Siobhan', last_name: 'Kelly', phone: '+353-1-555-0501', nationality: 'Irish', company_name: 'GreenBuild Solutions', company_registration: 'IE-2019-55432' },
+    {
+      id: uuidv4(),
+      email: 'contractor@buildright.ie',
+      role: 'contractor',
+      first_name: 'Michael',
+      last_name: 'Fitzgerald',
+      phone: '+353-1-555-0301',
+      nationality: 'Irish',
+      company_name: 'BuildRight Construction Ltd',
+      company_registration: 'IE-2018-33210',
+    },
   ],
-  // Subcontractors
+  // Subcontractors (ElecSpec Electrical, Sticks and Planks Scaffolding)
   subcontractors: [
-    { id: uuidv4(), email: 'sub@elecspec.ie', role: 'subcontractor', first_name: 'Declan', last_name: 'Murphy', phone: '+353-1-555-0601', nationality: 'Irish', company_name: 'ElecSpec Electrical', company_registration: 'IE-2021-11223' },
-    { id: uuidv4(), email: 'sub@steelfix.ro', role: 'subcontractor', first_name: 'Ion', last_name: 'Ionescu', phone: '+40-21-555-0701', nationality: 'Romanian', company_name: 'SteelFix Romania SRL', company_registration: 'RO-J40-2345-2019' },
+    {
+      id: uuidv4(),
+      email: 'sub@elecspec.ie',
+      role: 'subcontractor',
+      first_name: 'Declan',
+      last_name: 'Murphy',
+      phone: '+353-1-555-0601',
+      nationality: 'Irish',
+      company_name: 'ElecSpec Electrical',
+      company_registration: 'IE-2021-11223',
+    },
+    {
+      id: uuidv4(),
+      email: 'sub@sticksandplanks.ie',
+      role: 'subcontractor',
+      first_name: 'Katie',
+      last_name: 'Doyle',
+      phone: '+353-1-555-0701',
+      nationality: 'Irish',
+      company_name: 'Sticks and Planks Scaffolding',
+      company_registration: 'IE-2022-77889',
+    },
   ],
   // Workers
   workers: [
@@ -75,27 +113,33 @@ insertUsers();
 console.log(`✓ Created ${allUsers.length} users (${users.clients.length} clients, ${users.contractors.length} contractors, ${users.subcontractors.length} subcontractors, ${users.workers.length} workers)`);
 
 // ===== PROJECTS =====
+// Single Verified Project for demo: 24MW Data Centre – West Dublin
 const projectData = [
-  { title: 'Dublin Metro North - Tunnel Section B', description: 'Major tunnelling works for Dublin Metro North project, Section B from Glasnevin to Drumcondra.', sector: 'infrastructure', location: 'Dublin, Ireland', country: 'Ireland', client_idx: 0, start_date: '2026-03-01', end_date: '2027-06-30', compliance: ['SafePass', 'CSCS Card', 'Manual Handling', 'Confined Space'], max_workers: 150 },
-  { title: 'Cork Wind Farm - Phase 2', description: 'Installation of 40 wind turbines in Cork harbour area, including foundation and electrical works.', sector: 'energy', location: 'Cork, Ireland', country: 'Ireland', client_idx: 0, start_date: '2026-04-15', end_date: '2027-02-28', compliance: ['SafePass', 'Working at Heights', 'Arc Flash Awareness', 'First Aid'], max_workers: 80 },
-  { title: 'Berlin Data Centre Campus', description: 'Construction of Tier IV data centre campus in Berlin suburbs with full MEP fit-out.', sector: 'construction', location: 'Berlin, Germany', country: 'Germany', client_idx: 1, start_date: '2026-02-15', end_date: '2027-08-31', compliance: ['SafePass', 'CSCS Card', 'Electrical Safety', 'Fire Marshal'], max_workers: 200 },
-  { title: 'Limerick Hospital Extension', description: 'Extension of A&E department at University Hospital Limerick, including new wards and diagnostic suites.', sector: 'construction', location: 'Limerick, Ireland', country: 'Ireland', client_idx: 0, start_date: '2026-05-01', end_date: '2027-04-30', compliance: ['SafePass', 'Manual Handling', 'Infection Control', 'First Aid'], max_workers: 60 },
-  { title: 'Hamburg Port Modernisation', description: 'Upgrade of cargo handling systems and terminal infrastructure at Hamburg port.', sector: 'infrastructure', location: 'Hamburg, Germany', country: 'Germany', client_idx: 1, start_date: '2026-06-01', end_date: '2027-12-31', compliance: ['SafePass', 'Marine Safety', 'Manual Handling', 'Working at Heights'], max_workers: 120 },
-  { title: 'Galway Solar Array Installation', description: 'Large-scale solar panel array installation across 50 hectares in Galway.', sector: 'energy', location: 'Galway, Ireland', country: 'Ireland', client_idx: 0, start_date: '2026-03-15', end_date: '2026-11-30', compliance: ['SafePass', 'Electrical Safety', 'Manual Handling'], max_workers: 40 },
-  { title: 'Frankfurt Office Tower Refurbishment', description: 'Full interior refurbishment of 25-storey commercial office tower in Frankfurt business district.', sector: 'construction', location: 'Frankfurt, Germany', country: 'Germany', client_idx: 1, start_date: '2026-04-01', end_date: '2027-03-31', compliance: ['SafePass', 'Working at Heights', 'Asbestos Awareness', 'Fire Marshal'], max_workers: 90 },
-  { title: 'Waterford Bridge Rehabilitation', description: 'Structural rehabilitation and widening of N25 bridge over River Suir.', sector: 'infrastructure', location: 'Waterford, Ireland', country: 'Ireland', client_idx: 0, start_date: '2026-07-01', end_date: '2027-06-30', compliance: ['SafePass', 'CSCS Card', 'Working at Heights', 'Traffic Management'], max_workers: 45 },
+  {
+    title: '24MW Data Centre – West Dublin',
+    description: 'HyperDC Co Tier III+ data centre build in West Dublin, including full MEP fit-out and commissioning.',
+    sector: 'construction',
+    location: 'West Dublin, Ireland',
+    country: 'Ireland',
+    client_idx: 0,
+    start_date: '2026-03-01',
+    end_date: '2027-03-31',
+    compliance: ['SafePass', 'Electrical Safety', 'Manual Handling', 'Working at Heights'],
+    max_workers: 120,
+  },
 ];
 
 const projects = [];
+const pqqTemplateIdForProject = 'tpl-construction-14';
 const insertProject = db.prepare(`
-  INSERT INTO projects (id, title, description, client_id, sector, location, country, start_date, end_date, status, compliance_requirements, privacy_settings, max_workers)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, '{"public": true}', ?)
+  INSERT INTO projects (id, title, description, client_id, sector, location, country, start_date, end_date, status, compliance_requirements, privacy_settings, max_workers, pqq_template_id, pqq_due_days)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, '{"public": true}', ?, ?, ?)
 `);
 
 const insertProjects = db.transaction(() => {
   for (const p of projectData) {
     const id = uuidv4();
-    insertProject.run(id, p.title, p.description, users.clients[p.client_idx].id, p.sector, p.location, p.country, p.start_date, p.end_date, JSON.stringify(p.compliance), p.max_workers);
+    insertProject.run(id, p.title, p.description, users.clients[p.client_idx].id, p.sector, p.location, p.country, p.start_date, p.end_date, JSON.stringify(p.compliance), p.max_workers, pqqTemplateIdForProject, 14);
     projects.push({ id, ...p });
   }
 });
@@ -103,16 +147,9 @@ insertProjects();
 console.log(`✓ Created ${projects.length} Verified Projects`);
 
 // ===== DELEGATIONS =====
+// HyperDC Co → BuildRight Construction Ltd (contractor) → ElecSpec / Sticks and Planks (subcontractors)
 const delegationData = [
   { project_idx: 0, contractor_idx: 0, status: 'approved' },
-  { project_idx: 0, contractor_idx: 1, status: 'approved' },
-  { project_idx: 1, contractor_idx: 2, status: 'approved' },
-  { project_idx: 2, contractor_idx: 1, status: 'approved' },
-  { project_idx: 3, contractor_idx: 0, status: 'approved' },
-  { project_idx: 4, contractor_idx: 1, status: 'pending' },
-  { project_idx: 5, contractor_idx: 2, status: 'approved' },
-  { project_idx: 6, contractor_idx: 0, status: 'approved' },
-  { project_idx: 7, contractor_idx: 2, status: 'approved' },
 ];
 
 const insertDelegation = db.prepare(`
@@ -121,9 +158,8 @@ const insertDelegation = db.prepare(`
 `);
 
 const subdelegations = [
-  { project_idx: 0, sub_idx: 0 },
-  { project_idx: 2, sub_idx: 1 },
-  { project_idx: 6, sub_idx: 0 },
+  { project_idx: 0, sub_idx: 0 }, // ElecSpec Electrical
+  { project_idx: 0, sub_idx: 1 }, // Sticks and Planks Scaffolding
 ];
 
 const insertSubDelegation = db.prepare(`
@@ -133,12 +169,25 @@ const insertSubDelegation = db.prepare(`
 
 const insertDelegations = db.transaction(() => {
   for (const d of delegationData) {
-    const clientId = projects[d.project_idx].client_idx === 0 ? users.clients[0].id : users.clients[1].id;
-    insertDelegation.run(uuidv4(), projects[d.project_idx].id, clientId, users.contractors[d.contractor_idx].id, d.status, d.status === 'approved' ? clientId : null);
+    const clientId = users.clients[projects[d.project_idx].client_idx].id;
+    insertDelegation.run(
+      uuidv4(),
+      projects[d.project_idx].id,
+      clientId,
+      users.contractors[d.contract_idx ?? d.contractor_idx].id,
+      d.status,
+      d.status === 'approved' ? clientId : null
+    );
   }
   for (const sd of subdelegations) {
-    const clientId = projects[sd.project_idx].client_idx === 0 ? users.clients[0].id : users.clients[1].id;
-    insertSubDelegation.run(uuidv4(), projects[sd.project_idx].id, users.contractors[0].id, users.subcontractors[sd.sub_idx].id, clientId);
+    const clientId = users.clients[projects[sd.project_idx].client_idx].id;
+    insertSubDelegation.run(
+      uuidv4(),
+      projects[sd.project_idx].id,
+      users.contractors[0].id,
+      users.subcontractors[sd.sub_idx].id,
+      clientId
+    );
   }
 });
 insertDelegations();
@@ -328,29 +377,80 @@ const insertTokens = db.transaction(() => {
 insertTokens();
 console.log(`✓ Created ${tokenCount} tokens`);
 
-// ===== PQQ SUBMISSIONS =====
-const insertPQQ = db.prepare(`
-  INSERT INTO pqq_submissions (id, company_id, project_id, submitted_by, status, company_profile, financial_status, compliance_status, documents)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
+// ===== PQQ TEMPLATES =====
+const constructionPQQSections = [
+  'Identity & Company Details', 'Financial Standing', 'Health & Safety', 'Quality Management',
+  'Environmental', 'Equal Opportunities', 'Modern Slavery', 'Insurance', 'References',
+  'Technical Capacity', 'Subcontracting', 'Compliance & Certifications', 'Data Protection', 'Declaration'
+];
+const pqqTemplateId = 'tpl-construction-14';
+db.prepare(`
+  INSERT INTO pqq_templates (id, name, sections) VALUES (?, ?, ?)
+`).run(pqqTemplateId, '14-Section Construction PQQ', JSON.stringify(constructionPQQSections));
+console.log('✓ Created PQQ template: 14-Section Construction PQQ');
 
-let pqqCount = 0;
-const insertPQQs = db.transaction(() => {
-  [...users.contractors, ...users.subcontractors].forEach(company => {
-    const project = projects[Math.floor(Math.random() * projects.length)];
-    const statuses = ['approved', 'approved', 'under_review', 'pending'];
-    const status = statuses[Math.floor(Math.random() * statuses.length)];
-    
-    insertPQQ.run(uuidv4(), company.id, project.id, company.id, status,
-      JSON.stringify({ name: company.company_name, registration: company.company_registration, employees: Math.floor(Math.random() * 200) + 20 }),
-      JSON.stringify({ creditScore: Math.floor(Math.random() * 300) + 600, turnover: `€${Math.floor(Math.random() * 50) + 5}M` }),
-      JSON.stringify({ taxCompliant: true, insuranceValid: true, safetyRecord: 'clean' }),
-      JSON.stringify(['insurance_cert.pdf', 'tax_clearance.pdf', 'safety_statement.pdf']));
-    pqqCount++;
-  });
-});
-insertPQQs();
-console.log(`✓ Created ${pqqCount} PQQ submissions`);
+// ===== PQQ INVITATIONS & SUBMISSIONS (demo flow) =====
+const client = users.clients[0];
+const contractor = users.contractors[0];
+const sub1 = users.subcontractors[0];
+const sub2 = users.subcontractors[1];
+const vp = projects[0];
+
+const dueDate = new Date();
+dueDate.setDate(dueDate.getDate() + 14);
+const dueStr = dueDate.toISOString().slice(0, 10);
+
+// HyperDC invites BuildRight → BuildRight submits → HyperDC approves (pre-seeded as approved)
+const inv1Id = uuidv4();
+db.prepare(`
+  INSERT INTO pqq_invitations (id, project_id, inviter_id, invitee_id, pqq_template_id, due_date, status)
+  VALUES (?, ?, ?, ?, ?, ?, 'approved')
+`).run(inv1Id, vp.id, client.id, contractor.id, pqqTemplateId, dueStr);
+
+const sub1Id = uuidv4();
+db.prepare(`
+  INSERT INTO pqq_submissions (id, invitation_id, company_id, project_id, submitted_by, status, company_profile, financial_status, compliance_status, documents)
+  VALUES (?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?)
+`).run(sub1Id, inv1Id, contractor.id, vp.id, contractor.id,
+  JSON.stringify({ name: contractor.company_name, registration: contractor.company_registration }),
+  JSON.stringify({ creditScore: 720, turnover: '€12M', status: 'pass' }),
+  JSON.stringify({ taxCompliant: true, insuranceValid: true, safetyRecord: 'clean' }),
+  JSON.stringify(['insurance_cert.pdf', 'tax_clearance.pdf']));
+
+db.prepare('UPDATE pqq_invitations SET pqq_submission_id = ? WHERE id = ?').run(sub1Id, inv1Id);
+
+// BuildRight invites ElecSpec and Sticks and Planks (invited – partner to submit in demo)
+const inv2Id = uuidv4();
+const inv3Id = uuidv4();
+db.prepare(`
+  INSERT INTO pqq_invitations (id, project_id, inviter_id, invitee_id, pqq_template_id, due_date, status)
+  VALUES (?, ?, ?, ?, ?, ?, 'invited')
+`).run(inv2Id, vp.id, contractor.id, sub1.id, pqqTemplateId, dueStr);
+db.prepare(`
+  INSERT INTO pqq_invitations (id, project_id, inviter_id, invitee_id, pqq_template_id, due_date, status)
+  VALUES (?, ?, ?, ?, ?, ?, 'invited')
+`).run(inv3Id, vp.id, contractor.id, sub2.id, pqqTemplateId, dueStr);
+
+console.log('✓ Created PQQ invitations (HyperDC→BuildRight approved; BuildRight→ElecSpec & Sticks and Planks invited)');
+
+// ===== DAR (Data Access Request) – chain of authority =====
+const insertDAR = db.prepare(`
+  INSERT INTO project_dar_requirements (id, project_id, added_by_id, requirement_key, label, sort_order)
+  VALUES (?, ?, ?, ?, ?, ?)
+`);
+let darOrder = 0;
+// Client (HyperDC) – base requirements
+insertDAR.run(uuidv4(), vp.id, client.id, 'rtw', 'Right-to-Work status (passport + RTW check)', ++darOrder);
+// Contractor (BuildRight) – site safety
+insertDAR.run(uuidv4(), vp.id, contractor.id, 'safepass', 'SafePass', ++darOrder);
+insertDAR.run(uuidv4(), vp.id, contractor.id, 'manual_handling', 'Manual Handling', ++darOrder);
+insertDAR.run(uuidv4(), vp.id, contractor.id, 'working_at_heights', 'Working at Heights', ++darOrder);
+// ElecSpec Electrical – professional / academic
+insertDAR.run(uuidv4(), vp.id, sub1.id, 'beng_electrical', 'BEng Electrical Engineering', ++darOrder);
+insertDAR.run(uuidv4(), vp.id, sub1.id, 'qqi_level6_electrical', 'QQI Level 6 Electrical qualification', ++darOrder);
+// Sticks and Planks Scaffolding – trade
+insertDAR.run(uuidv4(), vp.id, sub2.id, 'qqi_level5_scaffolding', 'QQI Level 5 Scaffolding', ++darOrder);
+console.log('✓ Created DAR requirements (Client → Contractor → Subcontractors)');
 
 // ===== AUDIT LOG ENTRIES =====
 const insertAudit = db.prepare(`

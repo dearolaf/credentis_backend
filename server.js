@@ -41,6 +41,7 @@ app.use('/api/badges', require('./routes/badges'));
 app.use('/api/compliance', require('./routes/compliance'));
 app.use('/api/audit', require('./routes/audit'));
 app.use('/api/onboarding', require('./routes/onboarding'));
+app.use('/api/dar', require('./routes/dar'));
 app.use('/api/consent', require('./routes/consent'));
 
 // Health check
