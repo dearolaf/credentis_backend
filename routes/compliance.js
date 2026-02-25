@@ -163,9 +163,14 @@ router.get('/workers', authenticate, requireRole('client', 'contractor', 'subcon
           const otherIssued = !isRtw && rowStatus === 'issued';
           if (rtwSatisfied || otherSatisfied) darSatisfied++;
           else if (otherIssued) darIssued++;
-          if (!rtwSatisfied && !otherSatisfied) {
+          if (!rtwSatisfied && !otherSatisfied && !otherIssued) {
+            // Not issued at all → red / non-compliant
             complianceStatus = 'non_compliant';
             issues.push(`Missing DAR: ${dr.label}`);
+          } else if (!rtwSatisfied && !otherSatisfied && otherIssued) {
+            // Issued to professional, awaiting their response → amber, no issue entry
+            // (the DAR column shows "X issued (awaiting)" so the Issues column stays clean)
+            if (complianceStatus !== 'non_compliant') complianceStatus = 'at_risk';
           }
         }
       }
