@@ -147,12 +147,16 @@ router.get('/workers', authenticate, requireRole('client', 'contractor', 'subcon
         }
       });
 
+      let darSatisfied = 0;
+      let darTotal = 0;
       if (project_id) {
         const darReqs = db.prepare('SELECT id, label, requirement_key FROM project_dar_requirements WHERE project_id = ?').all(project_id);
+        darTotal = darReqs.length;
         for (const dr of darReqs) {
           const isRtw = dr.requirement_key === 'rtw';
           const rtwSatisfied = isRtw && !!worker.is_verified;
           const otherSatisfied = !isRtw && (() => { const sat = db.prepare('SELECT status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(worker.id, dr.id); return sat && sat.status === 'satisfied'; })();
+          if (rtwSatisfied || otherSatisfied) darSatisfied++;
           if (!rtwSatisfied && !otherSatisfied) {
             complianceStatus = 'non_compliant';
             issues.push(`Missing DAR: ${dr.label}`);
@@ -165,7 +169,9 @@ router.get('/workers', authenticate, requireRole('client', 'contractor', 'subcon
         credentialCount: credentials.length,
         badgeCount: badges.count,
         complianceStatus,
-        issues
+        issues,
+        darSatisfied,
+        darTotal
       };
     });
 
@@ -223,6 +229,10 @@ router.get('/escalated', authenticate, requireRole('client', 'contractor', 'subc
         if (darMissing.length > 0) {
           const created = new Date(a.created_at).getTime();
           const unresolved_over_24h = (Date.now() - created) > 24 * 60 * 60 * 1000;
+          let actionRequiredBy = 'Contractor';
+          if (req.user.role === 'client' || req.user.role === 'admin') actionRequiredBy = 'Contractor';
+          else if (req.user.role === 'contractor') actionRequiredBy = sourceTier === 'subcontractor' ? 'Subcontractor' : 'Professional';
+          else if (req.user.role === 'subcontractor') actionRequiredBy = 'Professional';
           issues.push({
             severity: 'red',
             issue_type: 'dar_unsatisfied',
@@ -238,6 +248,7 @@ router.get('/escalated', authenticate, requireRole('client', 'contractor', 'subc
             escalated_to_contractor: true,
             escalated_to_client: true,
             unresolved_over_24h,
+            action_required_by: actionRequiredBy,
           });
         }
 
@@ -248,6 +259,10 @@ router.get('/escalated', authenticate, requireRole('client', 'contractor', 'subc
           if (check.color === 'red') {
             const created = new Date(a.created_at).getTime();
             const unresolved_over_24h = (Date.now() - created) > 24 * 60 * 60 * 1000;
+            let actionRequiredBy = 'Contractor';
+            if (req.user.role === 'client' || req.user.role === 'admin') actionRequiredBy = 'Contractor';
+            else if (req.user.role === 'contractor') actionRequiredBy = sourceTier === 'subcontractor' ? 'Subcontractor' : 'Professional';
+            else if (req.user.role === 'subcontractor') actionRequiredBy = 'Professional';
             issues.push({
               severity: 'red',
               issue_type: 'credential_expired',
@@ -263,6 +278,7 @@ router.get('/escalated', authenticate, requireRole('client', 'contractor', 'subc
               escalated_to_contractor: true,
               escalated_to_client: true,
               unresolved_over_24h,
+              action_required_by: actionRequiredBy,
             });
             break;
           }

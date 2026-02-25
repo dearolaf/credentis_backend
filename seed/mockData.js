@@ -203,6 +203,7 @@ const insertAssignment = db.prepare(`
 const assignmentData = db.transaction(() => {
   const statuses = ['active', 'active', 'active', 'approved', 'pending', 'completed'];
   const roles = ['General Operative', 'Electrician', 'Welder', 'Carpenter', 'Plumber', 'Site Engineer', 'Safety Officer', 'Crane Operator'];
+  const sean = users.workers[0];
 
   users.workers.forEach((worker, wIdx) => {
     // Assign each worker to 1-3 projects
@@ -217,7 +218,7 @@ const assignmentData = db.transaction(() => {
       const status = statuses[Math.floor(Math.random() * statuses.length)];
       const endorsed = ['active', 'completed'].includes(status);
       const endorser = users.contractors[Math.floor(Math.random() * users.contractors.length)];
-      const role = roles[Math.floor(Math.random() * roles.length)];
+      const role = (worker.id === sean.id) ? 'Electrical Engineer' : roles[Math.floor(Math.random() * roles.length)];
       const id = uuidv4();
 
       insertAssignment.run(id, projects[pIdx].id, worker.id, endorser.id, role,
