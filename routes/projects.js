@@ -443,19 +443,108 @@ router.get('/:projectId/workers/:workerId/dar-status', authenticate, requireRole
     const requirements = db.prepare(`
       SELECT id, label, requirement_key, sort_order FROM project_dar_requirements WHERE project_id = ? ORDER BY sort_order, id
     `).all(projectId);
+    // Fetch all satisfaction rows for this worker+project in one query
+    const satRows = db.prepare('SELECT dar_requirement_id, status FROM worker_dar_satisfaction WHERE worker_id = ? AND project_id = ?').all(workerId, projectId);
+    const satMap = Object.fromEntries(satRows.map(s => [s.dar_requirement_id, s.status]));
     const statuses = requirements.map(r => {
       const isRtw = r.requirement_key === 'rtw';
-      const satisfied = isRtw ? !!worker?.is_verified : (db.prepare('SELECT status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(workerId, r.id)?.status === 'satisfied');
-      return { ...r, status: satisfied ? 'satisfied' : 'pending' };
+      let status;
+      if (isRtw) {
+        status = worker?.is_verified ? 'satisfied' : (satMap[r.id] || 'not_issued');
+      } else {
+        const sat = satMap[r.id];
+        status = sat === 'satisfied' ? 'satisfied' : sat === 'issued' ? 'issued' : 'not_issued';
+      }
+      return { ...r, status };
     });
     return apiResponse(res, 200, {
       dar_requested_at: assignment.dar_requested_at || null,
       requirements: statuses,
       satisfied_count: statuses.filter(s => s.status === 'satisfied').length,
+      issued_count: statuses.filter(s => s.status === 'issued').length,
       total: statuses.length,
     }, 'DAR status');
   } catch (error) {
     console.error('DAR status error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * POST /api/projects/:projectId/workers/:workerId/dar/:darRequirementId/issue
+ * Contractor/Subcontractor issues a single DAR requirement to a specific professional.
+ * Creates/updates a worker_dar_satisfaction row with status='issued' (unless already satisfied).
+ */
+router.post('/:projectId/workers/:workerId/dar/:darRequirementId/issue', authenticate, requireRole('client', 'contractor', 'subcontractor', 'admin'), (req, res) => {
+  try {
+    const { projectId, workerId, darRequirementId } = req.params;
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+    if (!project) return apiResponse(res, 404, null, 'Project not found');
+    if (req.user.role === 'client' && project.client_id !== req.user.id) return apiResponse(res, 403, null, 'Forbidden');
+    if (['contractor', 'subcontractor'].includes(req.user.role)) {
+      const del = db.prepare('SELECT id FROM project_delegations WHERE project_id = ? AND delegatee_id = ? AND status = ?').get(projectId, req.user.id, 'approved');
+      if (!del) return apiResponse(res, 403, null, 'Forbidden');
+    }
+    const requirement = db.prepare('SELECT id, label FROM project_dar_requirements WHERE id = ? AND project_id = ?').get(darRequirementId, projectId);
+    if (!requirement) return apiResponse(res, 404, null, 'DAR requirement not found');
+
+    const existing = db.prepare('SELECT id, status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(workerId, darRequirementId);
+    if (existing && existing.status === 'satisfied') {
+      return apiResponse(res, 200, { status: 'satisfied' }, 'Requirement already satisfied');
+    }
+    if (existing) {
+      db.prepare(`UPDATE worker_dar_satisfaction SET status = 'issued', submitted_at = datetime('now') WHERE id = ?`).run(existing.id);
+    } else {
+      db.prepare(`INSERT INTO worker_dar_satisfaction (id, worker_id, project_id, dar_requirement_id, status, credential_id, submitted_at) VALUES (?, ?, ?, ?, 'issued', NULL, datetime('now'))`).run(uuidv4(), workerId, projectId, darRequirementId);
+    }
+
+    const auditId = uuidv4();
+    const bc = MockBlockchain.anchorData({ action: 'dar_issued', darRequirementId, workerId, projectId });
+    db.prepare(`INSERT INTO audit_log (id, actor_id, action, entity_type, entity_id, details, blockchain_tx, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(auditId, req.user.id, 'dar_issued', 'worker_dar_satisfaction', darRequirementId, JSON.stringify({ workerId, projectId, darRequirementId, label: requirement.label }), bc.transactionId, bc.dataHash);
+
+    return apiResponse(res, 200, { status: 'issued' }, `DAR requirement "${requirement.label}" issued to professional`);
+  } catch (error) {
+    console.error('DAR issue error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * PUT /api/projects/:projectId/workers/:workerId/dar/:darRequirementId/satisfy
+ * Contractor/Subcontractor marks a DAR item as satisfied on behalf of a professional
+ * (for demo/override). Optional body: { credential_id }
+ */
+router.put('/:projectId/workers/:workerId/dar/:darRequirementId/satisfy', authenticate, requireRole('client', 'contractor', 'subcontractor', 'admin'), (req, res) => {
+  try {
+    const { projectId, workerId, darRequirementId } = req.params;
+    const { credential_id } = req.body;
+
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+    if (!project) return apiResponse(res, 404, null, 'Project not found');
+    if (req.user.role === 'client' && project.client_id !== req.user.id) return apiResponse(res, 403, null, 'Forbidden');
+    if (['contractor', 'subcontractor'].includes(req.user.role)) {
+      const del = db.prepare('SELECT id FROM project_delegations WHERE project_id = ? AND delegatee_id = ? AND status = ?').get(projectId, req.user.id, 'approved');
+      if (!del) return apiResponse(res, 403, null, 'Forbidden');
+    }
+
+    const requirement = db.prepare('SELECT id, requirement_key FROM project_dar_requirements WHERE id = ? AND project_id = ?').get(darRequirementId, projectId);
+    if (!requirement) return apiResponse(res, 404, null, 'DAR requirement not found');
+
+    const existing = db.prepare('SELECT id FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(workerId, darRequirementId);
+    const credId = credential_id || null;
+    if (existing) {
+      db.prepare(`UPDATE worker_dar_satisfaction SET status = 'satisfied', credential_id = ?, submitted_at = datetime('now') WHERE id = ?`).run(credId, existing.id);
+    } else {
+      db.prepare(`INSERT INTO worker_dar_satisfaction (id, worker_id, project_id, dar_requirement_id, status, credential_id, submitted_at) VALUES (?, ?, ?, ?, 'satisfied', ?, datetime('now'))`).run(uuidv4(), workerId, projectId, darRequirementId, credId);
+    }
+
+    const auditId = uuidv4();
+    const bc = MockBlockchain.anchorData({ action: 'dar_satisfied_override', darRequirementId, workerId, projectId });
+    db.prepare(`INSERT INTO audit_log (id, actor_id, action, entity_type, entity_id, details, blockchain_tx, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(auditId, req.user.id, 'dar_satisfied', 'worker_dar_satisfaction', darRequirementId, JSON.stringify({ workerId, projectId, darRequirementId, credential_id: credId }), bc.transactionId, bc.dataHash);
+
+    return apiResponse(res, 200, { dar_requirement_id: darRequirementId, status: 'satisfied' }, 'DAR requirement marked as satisfied');
+  } catch (error) {
+    console.error('DAR satisfy error:', error);
     return apiResponse(res, 500, null, 'Internal server error');
   }
 });

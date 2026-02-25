@@ -106,7 +106,9 @@ const insertUsers = db.transaction(() => {
   for (const u of allUsers) {
     const did = MockBlockchain.createDID(u.id);
     const isWorker = u.role === 'worker';
-    insertUser.run(u.id, u.email, passwordHash, u.role, u.first_name, u.last_name, u.phone || null, u.nationality || null, u.date_of_birth || null, did, u.company_name || null, u.company_registration || null, isWorker ? 'none' : 'accepted', isWorker ? 'none' : 'accepted', isWorker ? 0 : 1);
+    // Sean (first worker) is pre-verified for the demo so RTW is satisfied
+    const isSean = isWorker && u === users.workers[0];
+    insertUser.run(u.id, u.email, passwordHash, u.role, u.first_name, u.last_name, u.phone || null, u.nationality || null, u.date_of_birth || null, did, u.company_name || null, u.company_registration || null, isSean ? 'accepted' : (isWorker ? 'none' : 'accepted'), isSean ? 'accepted' : (isWorker ? 'none' : 'accepted'), isSean ? 1 : (isWorker ? 0 : 1));
   }
 });
 insertUsers();
@@ -463,6 +465,43 @@ insertDAR.run(uuidv4(), vp.id, sub1.id, 'qqi_level6_electrical', 'QQI Level 6 El
 // Sticks and Planks Scaffolding – trade
 insertDAR.run(uuidv4(), vp.id, sub2.id, 'qqi_level5_scaffolding', 'QQI Level 5 Scaffolding', ++darOrder);
 console.log('✓ Created DAR requirements (Client → Contractor → Subcontractors)');
+
+// ===== DAR SATISFACTION – pre-seed for Sean so the demo shows real progress =====
+// Sean is verified (RTW auto-satisfied via is_verified), and has SafePass, Manual Handling,
+// Working at Heights, BEng Electrical, QQI L6 Electrical credentials.
+// Map his credentials to DAR requirements and insert worker_dar_satisfaction records.
+const darKeyToCredType = {
+  safepass: 'SafePass',
+  manual_handling: 'ManualHandling',
+  working_at_heights: 'WorkingAtHeights',
+  beng_electrical: 'BEng_Electrical',
+  qqi_level6_electrical: 'QQI_L6_Electrical',
+};
+
+const seanDARRows = db.prepare('SELECT id, requirement_key FROM project_dar_requirements WHERE project_id = ?').all(vp.id);
+const insertDARSat = db.prepare(`
+  INSERT OR IGNORE INTO worker_dar_satisfaction (id, worker_id, project_id, dar_requirement_id, status, credential_id, submitted_at)
+  VALUES (?, ?, ?, ?, 'satisfied', ?, datetime('now'))
+`);
+
+const seanId = users.workers[0].id;
+const satInserts = db.transaction(() => {
+  for (const darRow of seanDARRows) {
+    if (darRow.requirement_key === 'rtw') {
+      // RTW is satisfied via is_verified – no credential needed
+      insertDARSat.run(uuidv4(), seanId, vp.id, darRow.id, null);
+      continue;
+    }
+    const credType = darKeyToCredType[darRow.requirement_key];
+    if (!credType) continue; // e.g. qqi_level5_scaffolding – Sean doesn't have it
+    const credRow = db.prepare('SELECT id FROM credentials WHERE worker_id = ? AND type = ? LIMIT 1').get(seanId, credType);
+    if (credRow) {
+      insertDARSat.run(uuidv4(), seanId, vp.id, darRow.id, credRow.id);
+    }
+  }
+});
+satInserts();
+console.log(`✓ Pre-seeded DAR satisfaction for Sean Murphy (RTW + 4 credential-matched requirements)`);
 
 // ===== AUDIT LOG ENTRIES =====
 const insertAudit = db.prepare(`

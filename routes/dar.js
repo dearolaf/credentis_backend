@@ -40,14 +40,23 @@ router.get('/my-requirements', authenticate, requireRole('worker'), (req, res) =
     const isVerified = !!worker?.is_verified;
 
     const list = requirements.map(r => {
-      const fromTable = satisfactionByReq[r.id]?.status || 'pending';
       const isRtw = r.requirement_key === 'rtw';
-      const myStatus = isRtw ? (isVerified ? 'satisfied' : fromTable) : fromTable;
+      const row = satisfactionByReq[r.id];
+      let myStatus;
+      if (isRtw) {
+        myStatus = isVerified ? 'satisfied' : (row?.status || 'not_issued');
+      } else {
+        myStatus = row?.status === 'satisfied' ? 'satisfied'
+          : row?.status === 'issued' ? 'issued'
+          : 'not_issued';
+      }
       return {
         ...r,
         my_status: myStatus,
-        credential_id: satisfactionByReq[r.id]?.credential_id,
-        submitted_at: satisfactionByReq[r.id]?.submitted_at,
+        // can_act: professional can only respond to items that have been issued to them
+        can_act: myStatus === 'issued',
+        credential_id: row?.credential_id,
+        submitted_at: row?.submitted_at,
       };
     });
 

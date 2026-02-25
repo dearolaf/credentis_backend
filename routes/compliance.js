@@ -148,15 +148,21 @@ router.get('/workers', authenticate, requireRole('client', 'contractor', 'subcon
       });
 
       let darSatisfied = 0;
+      let darIssued = 0;
       let darTotal = 0;
       if (project_id) {
         const darReqs = db.prepare('SELECT id, label, requirement_key FROM project_dar_requirements WHERE project_id = ?').all(project_id);
         darTotal = darReqs.length;
+        const satRows = db.prepare('SELECT dar_requirement_id, status FROM worker_dar_satisfaction WHERE worker_id = ? AND project_id = ?').all(worker.id, project_id);
+        const satMap = Object.fromEntries(satRows.map(s => [s.dar_requirement_id, s.status]));
         for (const dr of darReqs) {
           const isRtw = dr.requirement_key === 'rtw';
           const rtwSatisfied = isRtw && !!worker.is_verified;
-          const otherSatisfied = !isRtw && (() => { const sat = db.prepare('SELECT status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(worker.id, dr.id); return sat && sat.status === 'satisfied'; })();
+          const rowStatus = satMap[dr.id];
+          const otherSatisfied = !isRtw && rowStatus === 'satisfied';
+          const otherIssued = !isRtw && rowStatus === 'issued';
           if (rtwSatisfied || otherSatisfied) darSatisfied++;
+          else if (otherIssued) darIssued++;
           if (!rtwSatisfied && !otherSatisfied) {
             complianceStatus = 'non_compliant';
             issues.push(`Missing DAR: ${dr.label}`);
@@ -171,6 +177,7 @@ router.get('/workers', authenticate, requireRole('client', 'contractor', 'subcon
         complianceStatus,
         issues,
         darSatisfied,
+        darIssued,
         darTotal
       };
     });
