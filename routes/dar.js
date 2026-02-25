@@ -46,8 +46,9 @@ router.get('/my-requirements', authenticate, requireRole('worker'), (req, res) =
       if (isRtw) {
         myStatus = isVerified ? 'satisfied' : (row?.status || 'not_issued');
       } else {
+        // DB stores issued items as "pending"; surface as "issued" to app UI
         myStatus = row?.status === 'satisfied' ? 'satisfied'
-          : row?.status === 'issued' ? 'issued'
+          : row?.status === 'pending' ? 'issued'
           : 'not_issued';
       }
       return {

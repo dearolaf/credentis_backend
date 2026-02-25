@@ -453,7 +453,8 @@ router.get('/:projectId/workers/:workerId/dar-status', authenticate, requireRole
         status = worker?.is_verified ? 'satisfied' : (satMap[r.id] || 'not_issued');
       } else {
         const sat = satMap[r.id];
-        status = sat === 'satisfied' ? 'satisfied' : sat === 'issued' ? 'issued' : 'not_issued';
+        // DB persists "pending" for issued-not-yet-satisfied; API returns "issued" for UI clarity
+        status = sat === 'satisfied' ? 'satisfied' : sat === 'pending' ? 'issued' : 'not_issued';
       }
       return { ...r, status };
     });
@@ -473,7 +474,8 @@ router.get('/:projectId/workers/:workerId/dar-status', authenticate, requireRole
 /**
  * POST /api/projects/:projectId/workers/:workerId/dar/:darRequirementId/issue
  * Contractor/Subcontractor issues a single DAR requirement to a specific professional.
- * Creates/updates a worker_dar_satisfaction row with status='issued' (unless already satisfied).
+ * Creates/updates a worker_dar_satisfaction row with status='pending' (unless already satisfied).
+ * NOTE: API exposes this as "issued" in responses; DB uses "pending" due schema constraints.
  */
 router.post('/:projectId/workers/:workerId/dar/:darRequirementId/issue', authenticate, requireRole('client', 'contractor', 'subcontractor', 'admin'), (req, res) => {
   try {
@@ -493,9 +495,9 @@ router.post('/:projectId/workers/:workerId/dar/:darRequirementId/issue', authent
       return apiResponse(res, 200, { status: 'satisfied' }, 'Requirement already satisfied');
     }
     if (existing) {
-      db.prepare(`UPDATE worker_dar_satisfaction SET status = 'issued', submitted_at = datetime('now') WHERE id = ?`).run(existing.id);
+      db.prepare(`UPDATE worker_dar_satisfaction SET status = 'pending', submitted_at = datetime('now') WHERE id = ?`).run(existing.id);
     } else {
-      db.prepare(`INSERT INTO worker_dar_satisfaction (id, worker_id, project_id, dar_requirement_id, status, credential_id, submitted_at) VALUES (?, ?, ?, ?, 'issued', NULL, datetime('now'))`).run(uuidv4(), workerId, projectId, darRequirementId);
+      db.prepare(`INSERT INTO worker_dar_satisfaction (id, worker_id, project_id, dar_requirement_id, status, credential_id, submitted_at) VALUES (?, ?, ?, ?, 'pending', NULL, datetime('now'))`).run(uuidv4(), workerId, projectId, darRequirementId);
     }
 
     const auditId = uuidv4();

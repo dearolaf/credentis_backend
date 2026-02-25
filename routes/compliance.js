@@ -160,7 +160,8 @@ router.get('/workers', authenticate, requireRole('client', 'contractor', 'subcon
           const rtwSatisfied = isRtw && !!worker.is_verified;
           const rowStatus = satMap[dr.id];
           const otherSatisfied = !isRtw && rowStatus === 'satisfied';
-          const otherIssued = !isRtw && rowStatus === 'issued';
+          // DB persists issued items as "pending"
+          const otherIssued = !isRtw && rowStatus === 'pending';
           if (rtwSatisfied || otherSatisfied) darSatisfied++;
           else if (otherIssued) darIssued++;
           if (!rtwSatisfied && !otherSatisfied && !otherIssued) {
