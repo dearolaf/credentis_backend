@@ -424,6 +424,74 @@ router.get('/:projectId/workers', authenticate, (req, res) => {
 });
 
 /**
+ * GET /api/projects/:projectId/workers/:workerId/dar-status - DAR requirements and this professional's status (for "View DAR" in portal)
+ */
+router.get('/:projectId/workers/:workerId/dar-status', authenticate, requireRole('client', 'contractor', 'subcontractor', 'admin'), (req, res) => {
+  try {
+    const { projectId, workerId } = req.params;
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+    if (!project) return apiResponse(res, 404, null, 'Project not found');
+    if (req.user.role === 'client' && project.client_id !== req.user.id) return apiResponse(res, 403, null, 'Forbidden');
+    if (['contractor', 'subcontractor'].includes(req.user.role)) {
+      const del = db.prepare('SELECT id FROM project_delegations WHERE project_id = ? AND delegatee_id = ? AND status = ?').get(projectId, req.user.id, 'approved');
+      if (!del) return apiResponse(res, 403, null, 'Forbidden');
+    }
+    const assignment = db.prepare('SELECT * FROM project_assignments WHERE project_id = ? AND worker_id = ?').get(projectId, workerId);
+    if (!assignment) return apiResponse(res, 404, null, 'Professional not assigned to this project');
+
+    const worker = db.prepare('SELECT is_verified FROM users WHERE id = ?').get(workerId);
+    const requirements = db.prepare(`
+      SELECT id, label, requirement_key, sort_order FROM project_dar_requirements WHERE project_id = ? ORDER BY sort_order, id
+    `).all(projectId);
+    const statuses = requirements.map(r => {
+      const isRtw = r.requirement_key === 'rtw';
+      const satisfied = isRtw ? !!worker?.is_verified : (db.prepare('SELECT status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(workerId, r.id)?.status === 'satisfied');
+      return { ...r, status: satisfied ? 'satisfied' : 'pending' };
+    });
+    return apiResponse(res, 200, {
+      dar_requested_at: assignment.dar_requested_at || null,
+      requirements: statuses,
+      satisfied_count: statuses.filter(s => s.status === 'satisfied').length,
+      total: statuses.length,
+    }, 'DAR status');
+  } catch (error) {
+    console.error('DAR status error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * POST /api/projects/:projectId/assignments/:assignmentId/request-dar - Send DAR request to this professional (sets dar_requested_at)
+ */
+router.post('/:projectId/assignments/:assignmentId/request-dar', authenticate, requireRole('client', 'contractor', 'subcontractor', 'admin'), (req, res) => {
+  try {
+    const { projectId, assignmentId } = req.params;
+    const assignment = db.prepare('SELECT * FROM project_assignments WHERE id = ? AND project_id = ?').get(assignmentId, projectId);
+    if (!assignment) return apiResponse(res, 404, null, 'Assignment not found');
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+    if (!project) return apiResponse(res, 404, null, 'Project not found');
+    if (req.user.role === 'client' && project.client_id !== req.user.id) return apiResponse(res, 403, null, 'Forbidden');
+    if (['contractor', 'subcontractor'].includes(req.user.role)) {
+      const del = db.prepare('SELECT id FROM project_delegations WHERE project_id = ? AND delegatee_id = ? AND status = ?').get(projectId, req.user.id, 'approved');
+      if (!del) return apiResponse(res, 403, null, 'Forbidden');
+    }
+    const now = new Date().toISOString();
+    db.prepare('UPDATE project_assignments SET dar_requested_at = ?, updated_at = datetime(\'now\') WHERE id = ?').run(now, assignmentId);
+    const auditId = uuidv4();
+    const blockchainResult = MockBlockchain.anchorData({ action: 'dar_requested', assignmentId, projectId, workerId: assignment.worker_id });
+    db.prepare(`
+      INSERT INTO audit_log (id, actor_id, action, entity_type, entity_id, details, blockchain_tx, hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(auditId, req.user.id, 'dar_requested', 'project_assignment', assignmentId,
+      JSON.stringify({ project_id: projectId, worker_id: assignment.worker_id }), blockchainResult.transactionId, blockchainResult.dataHash);
+    return apiResponse(res, 200, { dar_requested_at: now }, 'DAR request sent to professional');
+  } catch (error) {
+    console.error('Request DAR error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
  * DELETE /api/projects/:id - Delete a project (client owner only)
  */
 router.delete('/:id', authenticate, (req, res) => {

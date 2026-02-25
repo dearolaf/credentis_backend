@@ -305,5 +305,12 @@ try {
     db.exec('ALTER TABLE projects ADD COLUMN pqq_due_days INTEGER');
   }
 } catch (_) {}
+// Migration: dar_requested_at on project_assignments (for "Send DAR to professional")
+try {
+  const pacols = db.prepare("PRAGMA table_info(project_assignments)").all();
+  if (pacols.length && !pacols.find(c => c.name === 'dar_requested_at')) {
+    db.exec('ALTER TABLE project_assignments ADD COLUMN dar_requested_at TEXT');
+  }
+} catch (_) {}
 
 module.exports = db;
