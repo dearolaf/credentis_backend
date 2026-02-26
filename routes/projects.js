@@ -72,7 +72,7 @@ router.get('/:projectId', authenticate, (req, res) => {
 
     // Get workers
     const workers = db.prepare(`
-      SELECT pa.*, u.first_name, u.last_name, u.nationality, u.did
+      SELECT pa.*, u.first_name, u.last_name, u.nationality, u.did, u.is_verified, u.passport_status, u.biometric_status
       FROM project_assignments pa
       JOIN users u ON u.id = pa.worker_id
       WHERE pa.project_id = ?
@@ -400,11 +400,22 @@ router.put('/:projectId/assignments/:assignmentId/endorse', authenticate, requir
 router.put('/:projectId/assignments/:assignmentId/status', authenticate, requireRole('client', 'contractor', 'subcontractor'), (req, res) => {
   try {
     const { status } = req.body;
-    const { assignmentId } = req.params;
-    const validStatuses = ['approved', 'rejected', 'revoked', 'completed'];
+    const { assignmentId, projectId } = req.params;
+    const validStatuses = ['pending', 'approved', 'active', 'completed', 'rejected', 'revoked'];
 
     if (!validStatuses.includes(status)) {
       return apiResponse(res, 400, null, `Invalid status. Must be: ${validStatuses.join(', ')}`);
+    }
+
+    const assignment = db.prepare('SELECT * FROM project_assignments WHERE id = ? AND project_id = ?').get(assignmentId, projectId);
+    if (!assignment) return apiResponse(res, 404, null, 'Assignment not found');
+
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+    if (!project) return apiResponse(res, 404, null, 'Project not found');
+    if (req.user.role === 'client' && project.client_id !== req.user.id) return apiResponse(res, 403, null, 'Forbidden');
+    if (['contractor', 'subcontractor'].includes(req.user.role)) {
+      const del = db.prepare('SELECT id FROM project_delegations WHERE project_id = ? AND delegatee_id = ? AND status = ?').get(projectId, req.user.id, 'approved');
+      if (!del) return apiResponse(res, 403, null, 'Forbidden');
     }
 
     db.prepare('UPDATE project_assignments SET status = ?, updated_at = datetime(\'now\') WHERE id = ?').run(status, assignmentId);
@@ -422,7 +433,7 @@ router.put('/:projectId/assignments/:assignmentId/status', authenticate, require
 router.get('/:projectId/workers', authenticate, (req, res) => {
   try {
     const workers = db.prepare(`
-      SELECT pa.*, u.first_name, u.last_name, u.email, u.nationality, u.did, u.is_verified,
+      SELECT pa.*, u.first_name, u.last_name, u.email, u.nationality, u.did, u.is_verified, u.passport_status, u.biometric_status,
         (SELECT COUNT(*) FROM credentials c WHERE c.worker_id = u.id AND c.status = 'valid') as valid_credentials,
         (SELECT COUNT(*) FROM badges b WHERE b.worker_id = u.id) as badge_count
       FROM project_assignments pa
@@ -434,6 +445,81 @@ router.get('/:projectId/workers', authenticate, (req, res) => {
     return apiResponse(res, 200, workers, 'Professionals retrieved');
   } catch (error) {
     console.error('Get workers error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * PUT /api/projects/:projectId/workers/:workerId/verification-status - Update a professional's verification statuses
+ */
+router.put('/:projectId/workers/:workerId/verification-status', authenticate, requireRole('client', 'contractor', 'subcontractor', 'admin'), (req, res) => {
+  try {
+    const { projectId, workerId } = req.params;
+    const { passport_status, biometric_status } = req.body || {};
+    const allowed = ['none', 'pending', 'accepted', 'rejected'];
+
+    if (passport_status != null && !allowed.includes(passport_status)) {
+      return apiResponse(res, 400, null, `Invalid passport_status. Allowed: ${allowed.join(', ')}`);
+    }
+    if (biometric_status != null && !allowed.includes(biometric_status)) {
+      return apiResponse(res, 400, null, `Invalid biometric_status. Allowed: ${allowed.join(', ')}`);
+    }
+
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+    if (!project) return apiResponse(res, 404, null, 'Project not found');
+    if (req.user.role === 'client' && project.client_id !== req.user.id) return apiResponse(res, 403, null, 'Forbidden');
+    if (['contractor', 'subcontractor'].includes(req.user.role)) {
+      const del = db.prepare('SELECT id FROM project_delegations WHERE project_id = ? AND delegatee_id = ? AND status = ?').get(projectId, req.user.id, 'approved');
+      if (!del) return apiResponse(res, 403, null, 'Forbidden');
+    }
+
+    const assignment = db.prepare('SELECT id FROM project_assignments WHERE project_id = ? AND worker_id = ?').get(projectId, workerId);
+    if (!assignment) return apiResponse(res, 404, null, 'Professional not assigned to this project');
+
+    const worker = db.prepare('SELECT id, passport_status, biometric_status FROM users WHERE id = ?').get(workerId);
+    if (!worker) return apiResponse(res, 404, null, 'Professional not found');
+
+    const nextPassport = passport_status ?? worker.passport_status ?? 'none';
+    const nextBiometric = biometric_status ?? worker.biometric_status ?? 'none';
+    const nextVerified = nextPassport === 'accepted' && nextBiometric === 'accepted' ? 1 : 0;
+
+    db.prepare(`
+      UPDATE users
+      SET passport_status = ?, biometric_status = ?, is_verified = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(nextPassport, nextBiometric, nextVerified, workerId);
+
+    const auditId = uuidv4();
+    const blockchainResult = MockBlockchain.anchorData({
+      action: 'worker_verification_status_updated',
+      projectId,
+      workerId,
+      passport_status: nextPassport,
+      biometric_status: nextBiometric,
+      is_verified: nextVerified,
+    });
+    db.prepare(`
+      INSERT INTO audit_log (id, actor_id, action, entity_type, entity_id, details, blockchain_tx, hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      auditId,
+      req.user.id,
+      'worker_verification_status_updated',
+      'user',
+      workerId,
+      JSON.stringify({ projectId, passport_status: nextPassport, biometric_status: nextBiometric, is_verified: nextVerified }),
+      blockchainResult.transactionId,
+      blockchainResult.dataHash
+    );
+
+    return apiResponse(res, 200, {
+      worker_id: workerId,
+      passport_status: nextPassport,
+      biometric_status: nextBiometric,
+      is_verified: nextVerified,
+    }, 'Professional verification status updated');
+  } catch (error) {
+    console.error('Update professional verification status error:', error);
     return apiResponse(res, 500, null, 'Internal server error');
   }
 });
