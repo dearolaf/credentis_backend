@@ -169,8 +169,23 @@ router.post('/', authenticate, requireRole('client', 'admin'), (req, res) => {
 
     db.prepare(`
       INSERT INTO projects (id, title, description, client_id, sector, location, country, start_date, end_date, status, compliance_requirements, privacy_settings, max_workers, pqq_template_id, pqq_due_days)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
-    `).run(id, title, description, req.user.id, sector || 'construction', location, country || 'Ireland', start_date, end_date, complianceJSON, privacyJSON, max_workers || 100, pqq_template_id || null, pqq_due_days != null ? Number(pqq_due_days) : null);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      title,
+      description,
+      req.user.id,
+      sector || 'construction',
+      location,
+      country || 'Ireland',
+      start_date,
+      end_date,
+      complianceJSON,
+      privacyJSON,
+      max_workers || 100,
+      pqq_template_id || null,
+      pqq_due_days != null ? Number(pqq_due_days) : null
+    );
 
     // Audit
     const auditId = uuidv4();

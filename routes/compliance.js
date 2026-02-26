@@ -231,7 +231,8 @@ router.get('/escalated', authenticate, requireRole('client', 'contractor', 'subc
 
       for (const a of assignments) {
         const sourceTier = a.source_role === 'subcontractor' ? 'subcontractor' : a.source_role === 'contractor' ? 'contractor' : 'client';
-        if (req.user.role === 'subcontractor' && a.assigned_by !== req.user.id) continue;
+        // Subcontractors should see all red issues for projects delegated to them.
+        // Filtering by assigned_by can hide project issues when assignments were created upstream.
 
         const darReqs = db.prepare('SELECT id, label FROM project_dar_requirements WHERE project_id = ?').all(pid);
         let darMissing = [];
