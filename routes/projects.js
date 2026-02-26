@@ -607,6 +607,14 @@ router.delete('/:id', authenticate, (req, res) => {
     if (project.client_id !== req.user.id) return apiResponse(res, 403, null, 'Only the project owner can delete this project');
 
     const deleteTransaction = db.transaction(() => {
+      // Delete children first to satisfy FK constraints (no ON DELETE CASCADE in schema).
+      db.prepare('DELETE FROM worker_dar_satisfaction WHERE project_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM project_dar_requirements WHERE project_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM pqq_submissions WHERE project_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM pqq_invitations WHERE project_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM badges WHERE project_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM awards WHERE project_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM tokens WHERE project_id = ?').run(req.params.id);
       db.prepare('DELETE FROM project_assignments WHERE project_id = ?').run(req.params.id);
       db.prepare('DELETE FROM project_delegations WHERE project_id = ?').run(req.params.id);
       db.prepare('DELETE FROM projects WHERE id = ?').run(req.params.id);
