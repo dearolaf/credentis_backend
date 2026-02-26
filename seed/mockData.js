@@ -276,20 +276,25 @@ const insertCredentials = db.transaction(() => {
     selectedCreds.forEach(cred => {
       const issueDate = new Date(2024, Math.floor(Math.random() * 12), Math.floor(Math.random() * 28) + 1);
       let expiryDate;
-      const rand = Math.random();
-      if (rand < 0.1) {
-        expiryDate = new Date(2025, Math.floor(Math.random() * 12), 15); // Expired
-      } else if (rand < 0.25) {
-        expiryDate = new Date(2026, 2, Math.floor(Math.random() * 28) + 1); // Expiring soon
+      if (cred.type === 'QQI_L6_Electrical') {
+        // QQI Electrical Apprenticeship does not expire
+        expiryDate = null;
       } else {
-        expiryDate = new Date(2027, Math.floor(Math.random() * 12), 15); // Valid
+        const rand = Math.random();
+        if (rand < 0.1) {
+          expiryDate = new Date(2025, Math.floor(Math.random() * 12), 15); // Expired
+        } else if (rand < 0.25) {
+          expiryDate = new Date(2026, 2, Math.floor(Math.random() * 28) + 1); // Expiring soon
+        } else {
+          expiryDate = new Date(2027, Math.floor(Math.random() * 12), 15); // Valid
+        }
       }
 
       const vcResult = MockBlockchain.createVC(cred.type, { id: worker.id, did: MockBlockchain.createDID(worker.id) }, { id: 'platform', name: cred.issuer }, { type: cred.type, title: cred.title });
 
-      const status = expiryDate < new Date() ? 'expired' : 'valid';
+      const status = expiryDate == null ? 'valid' : (expiryDate < new Date() ? 'expired' : 'valid');
       insertCredential.run(uuidv4(), worker.id, cred.type, cred.title, cred.issuer,
-        issueDate.toISOString().split('T')[0], expiryDate.toISOString().split('T')[0],
+        issueDate.toISOString().split('T')[0], expiryDate == null ? null : expiryDate.toISOString().split('T')[0],
         status, JSON.stringify(vcResult.vc), vcResult.vcHash, vcResult.blockchainTx);
       credCount++;
     });

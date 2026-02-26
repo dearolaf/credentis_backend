@@ -8,6 +8,15 @@ const { mockSafePassCheck, apiResponse } = require('../utils/helpers');
 
 const router = express.Router();
 
+function isNonExpiringQQIElectrical(type, title) {
+  const normalizedType = (type || '').toLowerCase();
+  const normalizedTitle = (title || '').toLowerCase();
+  return normalizedType === 'qqi_l6_electrical' ||
+    (normalizedTitle.includes('qqi') &&
+      normalizedTitle.includes('electrical') &&
+      normalizedTitle.includes('apprenticeship'));
+}
+
 /**
  * GET /api/credentials - Get user's credentials
  */
@@ -49,15 +58,17 @@ router.get('/', authenticate, (req, res) => {
 
     // Add compliance status and project association to each credential
     const enrichedCreds = credentials.map((cred, index) => {
-      const compliance = cred.expiry_date
-        ? mockSafePassCheck(cred.expiry_date)
-        : { status: 'valid', color: 'green' };
+      const nonExpiring = isNonExpiringQQIElectrical(cred.type, cred.title);
+      const compliance = nonExpiring
+        ? { status: 'valid', color: 'green' }
+        : (cred.expiry_date ? mockSafePassCheck(cred.expiry_date) : { status: 'valid', color: 'green' });
 
       // Associate credentials with projects round-robin style for demo clarity
       const assignment = assignments.length > 0 ? assignments[index % assignments.length] : null;
 
       return {
         ...cred,
+        expiry_date: nonExpiring ? null : cred.expiry_date,
         compliance_status: compliance,
         project_id: assignment ? assignment.project_id : null,
         project_title: assignment ? assignment.project_title : null,
@@ -111,12 +122,16 @@ router.post('/', authenticate, (req, res) => {
       { type, title, ...(data || {}) }
     );
 
+    // Demo rule: QQI Electrical Apprenticeship is a permanent qualification (no expiry)
+    const isNonExpiringQualification = isNonExpiringQQIElectrical(type, title);
+    const resolvedExpiryDate = isNonExpiringQualification ? null : expiry_date;
+
     const id = uuidv4();
     db.prepare(`
       INSERT INTO credentials (id, worker_id, type, title, issuer, issue_date, expiry_date, status, data, vc_hash, blockchain_tx, is_verified)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'valid', ?, ?, ?, 1)
     `).run(id, workerId, type, title, issuer || 'Credentis Platform', issue_date || new Date().toISOString(),
-      expiry_date, JSON.stringify({ ...data, vc: vcResult.vc }), vcResult.vcHash, vcResult.blockchainTx);
+      resolvedExpiryDate, JSON.stringify({ ...data, vc: vcResult.vc }), vcResult.vcHash, vcResult.blockchainTx);
 
     // Audit
     const auditId = uuidv4();
@@ -144,7 +159,8 @@ router.post('/:id/verify', authenticate, (req, res) => {
     if (!credential) return apiResponse(res, 404, null, 'Credential not found');
 
     const verification = MockBlockchain.verifyCredential(credential.vc_hash);
-    const expiryCheck = credential.expiry_date ? mockSafePassCheck(credential.expiry_date) : null;
+    const nonExpiring = isNonExpiringQQIElectrical(credential.type, credential.title);
+    const expiryCheck = nonExpiring ? null : (credential.expiry_date ? mockSafePassCheck(credential.expiry_date) : null);
 
     return apiResponse(res, 200, { verification, expiryCheck }, 'Credential verified');
   } catch (error) {
