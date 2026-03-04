@@ -40,31 +40,8 @@ router.post('/register', async (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', 0)
     `).run(id, email, password_hash, role, first_name, last_name, phone || null, nationality || null, did, company_name || null, company_registration || null);
 
-    // Demo flow: when a new professional registers, auto-create a pending assignment
-    // on the latest active project so they are immediately visible in web portal
-    // Professional Management tables.
-    if (role === 'worker') {
-      const activeProject = db.prepare(`
-        SELECT id, client_id FROM projects
-        WHERE status = 'active'
-        ORDER BY created_at DESC
-        LIMIT 1
-      `).get();
-
-      if (activeProject) {
-        const alreadyAssigned = db.prepare(`
-          SELECT id FROM project_assignments
-          WHERE project_id = ? AND worker_id = ?
-        `).get(activeProject.id, id);
-
-        if (!alreadyAssigned) {
-          db.prepare(`
-            INSERT INTO project_assignments (id, project_id, worker_id, assigned_by, role_on_project, status)
-            VALUES (?, ?, ?, ?, ?, 'pending')
-          `).run(uuidv4(), activeProject.id, id, activeProject.client_id, 'Professional');
-        }
-      }
-    }
+    // New professionals are not auto-applied to any project.
+    // They must apply manually from the app's Projects screen.
 
     // Log audit
     const auditId = uuidv4();
