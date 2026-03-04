@@ -82,6 +82,7 @@ db.exec(`
     role_on_project TEXT,
     start_date TEXT,
     end_date TEXT,
+    supporting_info TEXT,
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'active', 'completed', 'rejected', 'revoked')),
     endorsement_status TEXT DEFAULT 'none' CHECK(endorsement_status IN ('none', 'endorsed', 'revoked')),
     endorsed_by TEXT,
@@ -310,6 +311,13 @@ try {
   const pacols = db.prepare("PRAGMA table_info(project_assignments)").all();
   if (pacols.length && !pacols.find(c => c.name === 'dar_requested_at')) {
     db.exec('ALTER TABLE project_assignments ADD COLUMN dar_requested_at TEXT');
+  }
+} catch (_) {}
+// Migration: supporting_info on project_assignments (application details from professional app)
+try {
+  const pacols = db.prepare("PRAGMA table_info(project_assignments)").all();
+  if (pacols.length && !pacols.find(c => c.name === 'supporting_info')) {
+    db.exec('ALTER TABLE project_assignments ADD COLUMN supporting_info TEXT');
   }
 } catch (_) {}
 

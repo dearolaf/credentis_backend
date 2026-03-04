@@ -8,6 +8,15 @@ const { apiResponse } = require('../utils/helpers');
 
 const router = express.Router();
 
+const toRequirementKey = (label) => {
+  const base = String(label || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return base || 'custom_requirement';
+};
+
 /**
  * GET /api/projects - List projects (filtered by role)
  */
@@ -195,19 +204,35 @@ router.post('/', authenticate, requireRole('client', 'admin'), (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(auditId, req.user.id, 'project_created', 'project', id, JSON.stringify({ title, sector }), blockchainResult.transactionId, blockchainResult.dataHash);
 
-    // VP-level DAR: if client sends dar_base (e.g. [{ key: 'rtw', label: 'Right-to-Work...' }]), insert into project_dar_requirements
+    // VP-level DAR: insert base DAR plus any compliance requirements so they appear in "Issue DAR".
+    const insertDar = db.prepare(`
+      INSERT INTO project_dar_requirements (id, project_id, added_by_id, requirement_key, label, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const usedKeys = new Set();
+    let sortOrder = 1;
+
+    const addDarRequirement = (key, label) => {
+      const cleanLabel = String(label || '').trim();
+      if (!cleanLabel) return;
+      let cleanKey = String(key || '').trim().toLowerCase();
+      if (!cleanKey) cleanKey = toRequirementKey(cleanLabel);
+      if (usedKeys.has(cleanKey)) return;
+      usedKeys.add(cleanKey);
+      insertDar.run(uuidv4(), id, req.user.id, cleanKey, cleanLabel, sortOrder++);
+    };
+
     const darBase = req.body.dar_base;
-    if (Array.isArray(darBase) && darBase.length > 0) {
-      const insertDar = db.prepare(`
-        INSERT INTO project_dar_requirements (id, project_id, added_by_id, requirement_key, label, sort_order)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      darBase.forEach((item, idx) => {
-        if (item && item.key && item.label) {
-          insertDar.run(uuidv4(), id, req.user.id, item.key, item.label, idx + 1);
+    if (Array.isArray(darBase)) {
+      darBase.forEach((item) => {
+        if (item && (item.key || item.label)) {
+          addDarRequirement(item.key, item.label || item.key);
         }
       });
     }
+
+    const complianceList = Array.isArray(compliance_requirements) ? compliance_requirements : [];
+    complianceList.forEach((label) => addDarRequirement(toRequirementKey(label), label));
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
     return apiResponse(res, 201, project, 'Project created successfully');
@@ -307,9 +332,9 @@ router.post('/:projectId/apply', authenticate, requireRole('worker'), (req, res)
 
     const id = uuidv4();
     db.prepare(`
-      INSERT INTO project_assignments (id, project_id, worker_id, assigned_by, role_on_project, start_date, end_date, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
-    `).run(id, projectId, req.user.id, req.user.id, role_on_project || 'worker', start_date, end_date);
+      INSERT INTO project_assignments (id, project_id, worker_id, assigned_by, role_on_project, start_date, end_date, supporting_info, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+    `).run(id, projectId, req.user.id, req.user.id, role_on_project || 'worker', start_date, end_date, supporting_info || null);
 
     // Audit (blockchain-anchored)
     const auditId = uuidv4();
