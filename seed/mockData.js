@@ -10,7 +10,9 @@ console.log('Seeding Credentis database with mock data...\n');
 
 // Clear existing data
 const tables = ['audit_log', 'data_access_requests', 'consent_records', 'tokens', 'awards', 'badges', 'credentials', 'project_assignments', 'project_delegations', 'worker_dar_satisfaction', 'project_dar_requirements', 'pqq_submissions', 'pqq_invitations', 'pqq_templates', 'projects', 'users'];
+db.prepare('PRAGMA foreign_keys = OFF').run();
 tables.forEach(t => db.prepare(`DELETE FROM ${t}`).run());
+db.prepare('PRAGMA foreign_keys = ON').run();
 
 const passwordHash = bcrypt.hashSync('Password123!', 10);
 
@@ -115,7 +117,7 @@ insertUsers();
 console.log(`✓ Created ${allUsers.length} users (${users.clients.length} clients, ${users.contractors.length} contractors, ${users.subcontractors.length} subcontractors, ${users.workers.length} workers)`);
 
 // ===== PROJECTS =====
-// Single Verified Project for demo: 24MW Data Centre – West Dublin
+// Portfolio of Verified Projects for demo (professionals can apply to multiple projects)
 const projectData = [
   {
     title: '24MW Data Centre – West Dublin',
@@ -128,6 +130,54 @@ const projectData = [
     end_date: '2027-03-31',
     compliance: ['SafePass', 'Electrical Safety', 'Manual Handling', 'Working at Heights'],
     max_workers: 120,
+  },
+  {
+    title: '18MW Data Centre – Cork East',
+    description: 'Regional data centre shell and core build with electrical and commissioning work packages.',
+    sector: 'construction',
+    location: 'Cork, Ireland',
+    country: 'Ireland',
+    client_idx: 0,
+    start_date: '2026-04-15',
+    end_date: '2027-01-30',
+    compliance: ['SafePass', 'Manual Handling', 'Working at Heights', 'Site Induction'],
+    max_workers: 90,
+  },
+  {
+    title: 'HyperDC Grid Connection Upgrade – Kildare',
+    description: 'HV/LV infrastructure upgrade and electrical safety programme for new data hall capacity.',
+    sector: 'energy',
+    location: 'Kildare, Ireland',
+    country: 'Ireland',
+    client_idx: 0,
+    start_date: '2026-05-01',
+    end_date: '2026-12-20',
+    compliance: ['SafePass', 'Electrical Safety', 'Arc Flash Awareness', 'Manual Handling'],
+    max_workers: 70,
+  },
+  {
+    title: 'HyperDC Campus Expansion – Limerick',
+    description: 'Civil and structural expansion with scaffold-heavy access works and EHS controls.',
+    sector: 'infrastructure',
+    location: 'Limerick, Ireland',
+    country: 'Ireland',
+    client_idx: 0,
+    start_date: '2026-06-10',
+    end_date: '2027-06-10',
+    compliance: ['SafePass', 'Working at Heights', 'QQI Level 5 Scaffolding', 'Site Induction'],
+    max_workers: 110,
+  },
+  {
+    title: 'HyperDC Operations Fit-out – Galway',
+    description: 'Operational fit-out, snagging, and handover activities with specialist electrical scope.',
+    sector: 'construction',
+    location: 'Galway, Ireland',
+    country: 'Ireland',
+    client_idx: 0,
+    start_date: '2026-07-01',
+    end_date: '2027-02-28',
+    compliance: ['SafePass', 'Manual Handling', 'BEng Electrical Engineering', 'QQI Level 6 Electrical qualification'],
+    max_workers: 80,
   },
 ];
 
@@ -152,6 +202,10 @@ console.log(`✓ Created ${projects.length} Verified Projects`);
 // HyperDC Co → BuildRight Construction Ltd (contractor) → ElecSpec / Sticks and Planks (subcontractors)
 const delegationData = [
   { project_idx: 0, contractor_idx: 0, status: 'approved' },
+  { project_idx: 1, contractor_idx: 0, status: 'approved' },
+  { project_idx: 2, contractor_idx: 0, status: 'approved' },
+  { project_idx: 3, contractor_idx: 0, status: 'approved' },
+  { project_idx: 4, contractor_idx: 0, status: 'approved' },
 ];
 
 const insertDelegation = db.prepare(`
@@ -162,6 +216,14 @@ const insertDelegation = db.prepare(`
 const subdelegations = [
   { project_idx: 0, sub_idx: 0 }, // ElecSpec Electrical
   { project_idx: 0, sub_idx: 1 }, // Sticks and Planks Scaffolding
+  { project_idx: 1, sub_idx: 0 },
+  { project_idx: 1, sub_idx: 1 },
+  { project_idx: 2, sub_idx: 0 },
+  { project_idx: 2, sub_idx: 1 },
+  { project_idx: 3, sub_idx: 0 },
+  { project_idx: 3, sub_idx: 1 },
+  { project_idx: 4, sub_idx: 0 },
+  { project_idx: 4, sub_idx: 1 },
 ];
 
 const insertSubDelegation = db.prepare(`
@@ -545,7 +607,7 @@ console.log('\n========================================');
 console.log('  Mock data seeding complete!');
 console.log('========================================');
 console.log('\nTest Accounts (password for all: Password123!):');
-console.log('  Scenario: HyperDC Co → 24MW VP → BuildRight → ElecSpec / Sticks and Planks');
+console.log('  Scenario: HyperDC Co portfolio (5 VPs) → BuildRight → ElecSpec / Sticks and Planks');
 console.log(`  Client:        client@hyperdc.co (HyperDC Co)`);
 console.log(`  Contractor:    contractor@buildright.ie (BuildRight Construction Ltd)`);
 console.log(`  Subcontractor: sub@elecspec.ie (ElecSpec Electrical)`);
