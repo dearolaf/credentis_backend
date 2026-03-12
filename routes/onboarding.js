@@ -5,8 +5,176 @@ const { authenticate } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const MockBlockchain = require('../utils/blockchain');
 const { mockPQQCheck, apiResponse } = require('../utils/helpers');
+const { upsertTemplateBundle } = require('../utils/pqqTemplateImport');
+const { parseTemplateFromXlsxFile, parseTemplateFromBase64 } = require('../utils/pqqTemplateXlsx');
 
 const router = express.Router();
+
+const toBool = (v) => {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v !== 0;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    return ['true', 'yes', '1', 'y'].includes(s);
+  }
+  return false;
+};
+
+const toNumber = (v) => {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+const applyValidationRule = (value, rule, ruleValue) => {
+  if (!rule || rule === 'none') return true;
+  const textValue = value == null ? '' : String(value);
+  const numValue = toNumber(value);
+
+  switch (rule) {
+    case 'regex': {
+      try {
+        return new RegExp(String(ruleValue || '')).test(textValue);
+      } catch (_) {
+        return true;
+      }
+    }
+    case 'email_format':
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(textValue);
+    case 'min_value': {
+      const min = toNumber(ruleValue);
+      return numValue != null && min != null ? numValue >= min : true;
+    }
+    case 'max_value': {
+      const max = toNumber(ruleValue);
+      return numValue != null && max != null ? numValue <= max : true;
+    }
+    case 'min_coverage': {
+      const minCoverage = toNumber(ruleValue);
+      const coverage = typeof value === 'object' && value ? toNumber(value.coverage) : numValue;
+      return coverage != null && minCoverage != null ? coverage >= minCoverage : true;
+    }
+    case 'pass_if_no':
+      return !toBool(value);
+    default:
+      return true;
+  }
+};
+
+const evaluatePQQ = (templateMeta, sections, questions, answers) => {
+  const sectionsById = Object.fromEntries(sections.map((s) => [s.section_id, s]));
+  const grouped = {};
+  questions.forEach((q) => {
+    grouped[q.section_id] = grouped[q.section_id] || [];
+    grouped[q.section_id].push(q);
+  });
+
+  const sectionResults = [];
+  let totalScore = 0;
+  let hardFail = false;
+  const failures = [];
+
+  for (const section of sections) {
+    const qs = grouped[section.section_id] || [];
+    let sectionScore = 0;
+    let sectionAutoFail = false;
+    let requiredMissing = false;
+    const questionResults = [];
+
+    for (const q of qs) {
+      const rawValue = answers?.[q.question_id];
+      const answered = rawValue != null && String(rawValue).trim() !== '';
+      const required = toBool(q.required);
+      const isMissing = required && !answered;
+      if (isMissing) requiredMissing = true;
+
+      const valid = answered ? applyValidationRule(rawValue, q.validation_rule, q.validation_value) : !required;
+      if (toBool(q.autofail_if_yes) && toBool(rawValue)) sectionAutoFail = true;
+      if (q.validation_rule === 'pass_if_no' && answered && toBool(rawValue)) sectionAutoFail = true;
+
+      let awarded = 0;
+      if (valid && answered) {
+        const pts = Number(q.points || 0);
+        if (toBool(q.apply_bonus_if_no)) {
+          awarded = !toBool(rawValue) ? pts : 0;
+        } else {
+          awarded = pts;
+        }
+      }
+      sectionScore += awarded;
+      questionResults.push({
+        question_id: q.question_id,
+        valid,
+        answered,
+        required_missing: isMissing,
+        points_awarded: awarded,
+      });
+    }
+
+    const threshold = Number(section.pass_threshold || 0);
+    let sectionPassed = true;
+    if (section.scoring_type === 'pass_fail') {
+      sectionPassed = !sectionAutoFail && !requiredMissing;
+    } else {
+      sectionPassed = !sectionAutoFail && !requiredMissing && sectionScore >= threshold;
+      totalScore += sectionScore;
+    }
+
+    if (!sectionPassed && section.scoring_type === 'pass_fail') hardFail = true;
+    if (!sectionPassed) {
+      failures.push({ section_id: section.section_id, section_title: section.section_title });
+    }
+
+    sectionResults.push({
+      section_id: section.section_id,
+      section_title: section.section_title,
+      scoring_type: section.scoring_type,
+      score: Number(sectionScore.toFixed(2)),
+      threshold,
+      passed: sectionPassed,
+      required_missing: requiredMissing,
+      auto_fail: sectionAutoFail,
+      questions: questionResults,
+    });
+  }
+
+  const passThreshold = Number(templateMeta?.pass_threshold || 70);
+  let overall_status = 'fail';
+  if (!hardFail && totalScore >= passThreshold) overall_status = 'pass';
+  else if (!hardFail && totalScore >= 60) overall_status = 'amber';
+
+  return {
+    total_score: Number(totalScore.toFixed(2)),
+    pass_threshold: passThreshold,
+    hard_fail: hardFail,
+    overall_status,
+    section_scores: sectionResults,
+    failures,
+  };
+};
+
+const writeTemplateImportAudit = (actorId, templateId, source, extra = {}) => {
+  const auditId = uuidv4();
+  const blockchainResult = MockBlockchain.anchorData({
+    action: 'pqq_template_imported',
+    templateId,
+    source,
+    ...extra,
+  });
+  db.prepare(`
+    INSERT INTO audit_log (id, actor_id, action, entity_type, entity_id, details, blockchain_tx, hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    auditId,
+    actorId,
+    'pqq_template_imported',
+    'pqq_template',
+    templateId,
+    JSON.stringify({ source, ...extra }),
+    blockchainResult.transactionId,
+    blockchainResult.dataHash
+  );
+};
 
 /**
  * GET /api/onboarding/partners - List partners / prospective partners
@@ -34,11 +202,173 @@ router.get('/partners', authenticate, requireRole('client', 'contractor', 'admin
  */
 router.get('/templates', authenticate, (req, res) => {
   try {
-    const templates = db.prepare('SELECT id, name, sections FROM pqq_templates ORDER BY name').all();
+    const templates = db.prepare(`
+      SELECT
+        t.id,
+        COALESCE(m.template_name, t.name) as name,
+        t.sections,
+        m.template_version,
+        m.standard_alignment,
+        m.project_type,
+        m.total_sections,
+        m.total_questions,
+        m.max_score,
+        m.pass_threshold,
+        m.default_deadline_days,
+        m.status
+      FROM pqq_templates t
+      LEFT JOIN pqq_template_metadata m ON m.template_id = t.id
+      ORDER BY name
+    `).all();
     return apiResponse(res, 200, templates, 'PQQ templates retrieved');
   } catch (error) {
     console.error('Get templates error:', error);
     return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * GET /api/onboarding/templates/:id - Full PQQ template details
+ */
+router.get('/templates/:id', authenticate, (req, res, next) => {
+  try {
+    if (req.params.id === 'import-history') return next();
+    const template = db.prepare(`
+      SELECT t.id, t.name, t.sections,
+        m.template_version, m.standard_alignment, m.project_type, m.min_project_value,
+        m.total_sections, m.total_questions, m.max_score, m.pass_threshold,
+        m.default_deadline_days, m.status, m.created_date, m.last_modified
+      FROM pqq_templates t
+      LEFT JOIN pqq_template_metadata m ON m.template_id = t.id
+      WHERE t.id = ?
+    `).get(req.params.id);
+    if (!template) return apiResponse(res, 404, null, 'Template not found');
+
+    const sections = db.prepare(`
+      SELECT section_id, section_number, section_title, max_points, pass_threshold, scoring_type, display_order, description, calculation_method, notes
+      FROM pqq_template_sections
+      WHERE template_id = ?
+      ORDER BY display_order, section_number
+    `).all(req.params.id);
+
+    const questions = db.prepare(`
+      SELECT question_id, section_id, question_number, question_text, question_type, data_type, required, points,
+        validation_rule, validation_value, autofail_if_yes, apply_amber_if_yes, apply_bonus_if_no,
+        apply_afr_red_days, apply_afr_amber_days, evidence_required
+      FROM pqq_template_questions
+      WHERE template_id = ?
+      ORDER BY section_id, question_number
+    `).all(req.params.id);
+
+    const expiryTracking = db.prepare(`
+      SELECT item_category, has_expiry, amber_alert_days, red_alert_days, escalation_logic, suspension_on_expiry
+      FROM pqq_expiry_tracking_config
+      WHERE template_id = ?
+    `).all(req.params.id);
+
+    return apiResponse(res, 200, { template, sections, questions, expiry_tracking: expiryTracking }, 'PQQ template detail retrieved');
+  } catch (error) {
+    console.error('Get template detail error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * GET /api/onboarding/templates/import-history - recent template imports
+ */
+router.get('/templates/import-history', authenticate, requireRole('client', 'admin'), (req, res) => {
+  try {
+    const rows = db.prepare(`
+      SELECT
+        al.id,
+        al.actor_id,
+        al.entity_id AS template_id,
+        al.details,
+        al.created_at,
+        u.first_name,
+        u.last_name,
+        u.email
+      FROM audit_log al
+      LEFT JOIN users u ON u.id = al.actor_id
+      WHERE al.action = 'pqq_template_imported'
+      ORDER BY al.created_at DESC
+      LIMIT 20
+    `).all();
+
+    const data = rows.map((r) => {
+      let details = {};
+      try { details = JSON.parse(r.details || '{}'); } catch (_) {}
+      return {
+        id: r.id,
+        template_id: r.template_id,
+        source: details.source || 'unknown',
+        sections_imported: details.sections_imported ?? null,
+        questions_imported: details.questions_imported ?? null,
+        imported_at: r.created_at,
+        imported_by: `${r.first_name || ''} ${r.last_name || ''}`.trim() || r.email || 'Unknown user',
+      };
+    });
+
+    return apiResponse(res, 200, data, 'Template import history retrieved');
+  } catch (error) {
+    console.error('Get template import history error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * POST /api/onboarding/templates/import - Import PQQ template bundle
+ */
+router.post('/templates/import', authenticate, requireRole('client', 'admin'), (req, res) => {
+  try {
+    const result = upsertTemplateBundle(db, req.body || {});
+    writeTemplateImportAudit(req.user.id, result.template_id, 'json_bundle', result);
+    return apiResponse(res, 201, result, 'PQQ template imported');
+  } catch (error) {
+    console.error('Import template error:', error);
+    return apiResponse(res, 500, null, error.message || 'Internal server error');
+  }
+});
+
+/**
+ * POST /api/onboarding/templates/import-xlsx - Import template from Excel workbook
+ * Body: { file_path? , workbook_base64? , template_id?, template_name? }
+ */
+router.post('/templates/import-xlsx', authenticate, requireRole('client', 'admin'), (req, res) => {
+  try {
+    const { file_path, workbook_base64, template_id, template_name } = req.body || {};
+    if (!file_path && !workbook_base64) {
+      return apiResponse(res, 400, null, 'Provide file_path or workbook_base64');
+    }
+
+    const overrides = {
+      template_id: template_id || undefined,
+      template_name: template_name || undefined,
+    };
+    const bundle = workbook_base64
+      ? parseTemplateFromBase64(workbook_base64, overrides)
+      : parseTemplateFromXlsxFile(file_path, overrides);
+    const result = upsertTemplateBundle(db, bundle);
+    writeTemplateImportAudit(
+      req.user.id,
+      result.template_id,
+      workbook_base64 ? 'workbook_base64' : 'file_path',
+      {
+        ...result,
+        parsed_sections: bundle.sections.length,
+        parsed_questions: bundle.questions.length,
+      }
+    );
+
+    return apiResponse(res, 201, {
+      ...result,
+      source: workbook_base64 ? 'workbook_base64' : file_path,
+      parsed_sections: bundle.sections.length,
+      parsed_questions: bundle.questions.length,
+    }, 'PQQ template imported from xlsx');
+  } catch (error) {
+    console.error('Import template xlsx error:', error);
+    return apiResponse(res, 500, null, error.message || 'Internal server error');
   }
 });
 
@@ -163,6 +493,29 @@ router.get('/invitations', authenticate, requireRole('client', 'contractor', 'su
 });
 
 /**
+ * GET /api/onboarding/invitations/:id - Get invitation details (with template id)
+ */
+router.get('/invitations/:id', authenticate, (req, res) => {
+  try {
+    const inv = db.prepare(`
+      SELECT pi.*, p.title as project_title, p.client_id, u.company_name as invitee_company
+      FROM pqq_invitations pi
+      JOIN projects p ON p.id = pi.project_id
+      JOIN users u ON u.id = pi.invitee_id
+      WHERE pi.id = ?
+    `).get(req.params.id);
+    if (!inv) return apiResponse(res, 404, null, 'Invitation not found');
+    if (![inv.invitee_id, inv.inviter_id, inv.client_id].includes(req.user.id) && req.user.role !== 'admin') {
+      return apiResponse(res, 403, null, 'Forbidden');
+    }
+    return apiResponse(res, 200, inv, 'Invitation retrieved');
+  } catch (error) {
+    console.error('Get invitation detail error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
  * POST /api/onboarding/invite - Invite a prospective partner (register new user)
  */
 router.post('/invite', authenticate, requireRole('client', 'contractor', 'admin'), (req, res) => {
@@ -209,11 +562,11 @@ router.post('/invite', authenticate, requireRole('client', 'contractor', 'admin'
  */
 router.post('/pqq', authenticate, requireRole('contractor', 'subcontractor'), (req, res) => {
   try {
-    const { invitation_id, company_profile, documents, financial_status, compliance_status, additional_info, employee_count, references } = req.body;
+    const { invitation_id, company_profile, documents, financial_status, compliance_status, additional_info, employee_count, references, answers } = req.body;
 
     if (!invitation_id) return apiResponse(res, 400, null, 'invitation_id required');
 
-    const inv = db.prepare('SELECT id, project_id, invitee_id, status FROM pqq_invitations WHERE id = ?').get(invitation_id);
+    const inv = db.prepare('SELECT id, project_id, invitee_id, status, pqq_template_id FROM pqq_invitations WHERE id = ?').get(invitation_id);
     if (!inv) return apiResponse(res, 404, null, 'Invitation not found');
     if (inv.invitee_id !== req.user.id) return apiResponse(res, 403, null, 'This invitation is not for you');
     if (inv.status !== 'invited') return apiResponse(res, 400, null, 'PQQ already submitted or processed for this invitation');
@@ -229,12 +582,39 @@ router.post('/pqq', authenticate, requireRole('contractor', 'subcontractor'), (r
       complianceData = JSON.stringify(pqqResult.complianceFlags);
     }
 
+    const templateMeta = db.prepare(`
+      SELECT m.*, t.id as template_id FROM pqq_templates t
+      LEFT JOIN pqq_template_metadata m ON m.template_id = t.id
+      WHERE t.id = ?
+    `).get(inv.pqq_template_id);
+    const templateSections = db.prepare(`
+      SELECT section_id, section_title, pass_threshold, scoring_type, max_points
+      FROM pqq_template_sections
+      WHERE template_id = ?
+      ORDER BY display_order, section_number
+    `).all(inv.pqq_template_id);
+    const templateQuestions = db.prepare(`
+      SELECT question_id, section_id, question_text, question_type, required, points, validation_rule, validation_value, autofail_if_yes, apply_bonus_if_no
+      FROM pqq_template_questions
+      WHERE template_id = ?
+      ORDER BY section_id, question_number
+    `).all(inv.pqq_template_id);
+
+    const providedAnswers = typeof answers === 'object' && answers ? answers : {};
+    const scoreResult = templateQuestions.length > 0
+      ? evaluatePQQ(templateMeta || {}, templateSections, templateQuestions, providedAnswers)
+      : { total_score: 0, overall_status: 'amber', section_scores: [], failures: [] };
+
     db.prepare(`
-      INSERT INTO pqq_submissions (id, invitation_id, company_id, project_id, submitted_by, status, company_profile, financial_status, compliance_status, documents)
-      VALUES (?, ?, ?, ?, ?, 'under_review', ?, ?, ?, ?)
+      INSERT INTO pqq_submissions (id, invitation_id, company_id, project_id, submitted_by, status, company_profile, financial_status, compliance_status, answers_json, section_scores_json, total_score, overall_status, documents)
+      VALUES (?, ?, ?, ?, ?, 'under_review', ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, invitation_id, req.user.id, inv.project_id, req.user.id,
       JSON.stringify(company_profile || { additional_info, employee_count, references }),
       financialData, complianceData,
+      JSON.stringify(providedAnswers),
+      JSON.stringify(scoreResult.section_scores || []),
+      scoreResult.total_score || 0,
+      scoreResult.overall_status || null,
       JSON.stringify(documents || []));
 
     db.prepare(`
@@ -250,7 +630,13 @@ router.post('/pqq', authenticate, requireRole('contractor', 'subcontractor'), (r
       JSON.stringify({ submittedBy: req.user.id, invitation_id }),
       blockchainResult.transactionId, blockchainResult.dataHash);
 
-    return apiResponse(res, 201, { id, status: 'under_review' }, 'PQQ submitted');
+    return apiResponse(res, 201, {
+      id,
+      status: 'under_review',
+      total_score: scoreResult.total_score || 0,
+      overall_status: scoreResult.overall_status || null,
+      failures: scoreResult.failures || [],
+    }, 'PQQ submitted');
   } catch (error) {
     console.error('Submit PQQ error:', error);
     return apiResponse(res, 500, null, 'Internal server error');
@@ -327,6 +713,64 @@ router.put('/pqq/:id/review', authenticate, requireRole('client', 'contractor', 
     return apiResponse(res, 200, null, `PQQ ${status}`);
   } catch (error) {
     console.error('Review PQQ error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * GET /api/onboarding/pqq/:id/expiry-alerts - Evaluate expiry alerts for a submission
+ */
+router.get('/pqq/:id/expiry-alerts', authenticate, (req, res) => {
+  try {
+    const submission = db.prepare(`
+      SELECT pq.id, pq.company_id, pq.project_id, pq.answers_json, pi.pqq_template_id
+      FROM pqq_submissions pq
+      LEFT JOIN pqq_invitations pi ON pi.id = pq.invitation_id
+      WHERE pq.id = ?
+    `).get(req.params.id);
+    if (!submission) return apiResponse(res, 404, null, 'PQQ submission not found');
+    if (req.user.role !== 'admin' && req.user.id !== submission.company_id) {
+      const project = db.prepare('SELECT client_id FROM projects WHERE id = ?').get(submission.project_id);
+      if (!project || project.client_id !== req.user.id) return apiResponse(res, 403, null, 'Forbidden');
+    }
+
+    const answers = submission.answers_json ? JSON.parse(submission.answers_json) : {};
+    const cfg = db.prepare(`
+      SELECT item_category, amber_alert_days, red_alert_days, escalation_logic, suspension_on_expiry
+      FROM pqq_expiry_tracking_config
+      WHERE template_id = ?
+    `).all(submission.pqq_template_id);
+
+    const insuranceCfg = cfg.find((c) => c.item_category === 'insurance_policy');
+    const alerts = [];
+    if (insuranceCfg) {
+      const today = new Date();
+      Object.entries(answers).forEach(([qid, value]) => {
+        if (value && typeof value === 'object' && value.expiry_date) {
+          const expiry = new Date(value.expiry_date);
+          const daysToExpiry = Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
+          let level = 'ok';
+          if (insuranceCfg.red_alert_days != null && daysToExpiry <= Number(insuranceCfg.red_alert_days)) level = 'red';
+          else if (insuranceCfg.amber_alert_days != null && daysToExpiry <= Number(insuranceCfg.amber_alert_days)) level = 'amber';
+          alerts.push({
+            question_id: qid,
+            expiry_date: value.expiry_date,
+            days_to_expiry: daysToExpiry,
+            level,
+            escalation_logic: insuranceCfg.escalation_logic,
+            suspension_on_expiry: !!insuranceCfg.suspension_on_expiry,
+          });
+        }
+      });
+    }
+
+    return apiResponse(res, 200, {
+      submission_id: submission.id,
+      alerts,
+      suspend_recommended: alerts.some((a) => a.level === 'red' && a.suspension_on_expiry),
+    }, 'PQQ expiry alerts evaluated');
+  } catch (error) {
+    console.error('PQQ expiry alerts error:', error);
     return apiResponse(res, 500, null, 'Internal server error');
   }
 });

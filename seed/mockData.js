@@ -9,7 +9,30 @@ const MockBlockchain = require('../utils/blockchain');
 console.log('Seeding Credentis database with mock data...\n');
 
 // Clear existing data
-const tables = ['audit_log', 'data_access_requests', 'consent_records', 'tokens', 'awards', 'badges', 'credentials', 'project_assignments', 'project_delegations', 'worker_dar_satisfaction', 'project_dar_requirements', 'pqq_submissions', 'pqq_invitations', 'pqq_templates', 'projects', 'users'];
+const tables = [
+  'audit_log',
+  'data_access_requests',
+  'consent_records',
+  'tokens',
+  'awards',
+  'badges',
+  'credentials',
+  'project_assignments',
+  'project_delegations',
+  'worker_dar_satisfaction',
+  'project_dar_requirements',
+  'pqq_submissions',
+  'pqq_invitations',
+  'pqq_template_questions',
+  'pqq_expiry_tracking_config',
+  'pqq_validation_rules_reference',
+  'pqq_question_types_reference',
+  'pqq_template_sections',
+  'pqq_template_metadata',
+  'pqq_templates',
+  'projects',
+  'users'
+];
 db.prepare('PRAGMA foreign_keys = OFF').run();
 tables.forEach(t => db.prepare(`DELETE FROM ${t}`).run());
 db.prepare('PRAGMA foreign_keys = ON').run();
@@ -108,9 +131,25 @@ const insertUsers = db.transaction(() => {
   for (const u of allUsers) {
     const did = MockBlockchain.createDID(u.id);
     const isWorker = u.role === 'worker';
-    // Sean (first worker) is pre-verified for the demo so RTW is satisfied
-    const isSean = isWorker && u === users.workers[0];
-    insertUser.run(u.id, u.email, passwordHash, u.role, u.first_name, u.last_name, u.phone || null, u.nationality || null, u.date_of_birth || null, did, u.company_name || null, u.company_registration || null, isSean ? 'accepted' : (isWorker ? 'none' : 'accepted'), isSean ? 'accepted' : (isWorker ? 'none' : 'accepted'), isSean ? 1 : (isWorker ? 0 : 1));
+    // For demo resets, workers (including Sean) start unverified so passport/selfie
+    // verification can be shown live in the app.
+    insertUser.run(
+      u.id,
+      u.email,
+      passwordHash,
+      u.role,
+      u.first_name,
+      u.last_name,
+      u.phone || null,
+      u.nationality || null,
+      u.date_of_birth || null,
+      did,
+      u.company_name || null,
+      u.company_registration || null,
+      isWorker ? 'none' : 'accepted',
+      isWorker ? 'none' : 'accepted',
+      isWorker ? 0 : 1
+    );
   }
 });
 insertUsers();
@@ -468,6 +507,144 @@ const pqqTemplateId = 'tpl-construction-14';
 db.prepare(`
   INSERT INTO pqq_templates (id, name, sections) VALUES (?, ?, ?)
 `).run(pqqTemplateId, '14-Section Construction PQQ', JSON.stringify(constructionPQQSections));
+db.prepare(`
+  INSERT OR REPLACE INTO pqq_template_metadata
+  (template_id, template_name, template_version, standard_alignment, project_type, min_project_value, total_sections, total_questions, max_score, pass_threshold, default_deadline_days, status, created_date, last_modified)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`).run(
+  pqqTemplateId,
+  '€100m+ GC Data Centre PQQ',
+  '1.0',
+  'PAS 91:2013 principles',
+  'General Contractor - Data Centre',
+  100000000,
+  14,
+  28,
+  100,
+  70,
+  14,
+  'active',
+  '2026-02-25',
+  '2026-03-10'
+);
+
+const pqqSections = [
+  ['sec_01', 1, 'Organisation Identity', 0, 0, 'pass_fail', 'Company registration and structure information'],
+  ['sec_02', 2, 'Financial Standing', 15, 10, 'scored', 'Turnover, profitability, liquidity and credit rating'],
+  ['sec_03', 3, 'Insurance', 15, 12, 'scored', 'EL, PL, PI and All Risk insurance coverage'],
+  ['sec_04', 4, 'Exclusion Grounds', 0, 0, 'pass_fail', 'Criminal, bankruptcy, tax and blacklist checks'],
+  ['sec_05', 5, 'Health & Safety', 20, 14, 'scored', 'H&S policy, ISO 45001, RIDDOR, HSE notices'],
+  ['sec_06', 6, 'Environmental', 10, 6, 'scored', 'Environmental policy, ISO 14001, carbon reduction'],
+  ['sec_07', 7, 'Quality', 10, 6, 'scored', 'Quality policy, ISO 9001, non-conformance rates'],
+  ['sec_08', 8, 'Technical Experience', 15, 10, 'scored', 'Project references over €50m, data centre experience'],
+  ['sec_09', 9, 'Key Personnel', 10, 7, 'scored', 'PM, QS, SHEQ and BIM manager qualifications'],
+  ['sec_10', 10, 'Supply Chain', 5, 3, 'scored', 'Payment terms, modern slavery, subcontractor vetting'],
+  ['sec_11', 11, 'BIM Capability', 5, 3, 'scored', 'BIM level 2, execution plans, software platforms'],
+  ['sec_12', 12, 'EDI & Social Value', 5, 3, 'scored', 'EDI policy, apprenticeships, local employment'],
+  ['sec_13', 13, 'Cyber Security', 5, 3, 'scored', 'Cyber essentials, GDPR, data breach history'],
+  ['sec_14', 14, 'Legal', 0, 0, 'pass_fail', 'Litigation, judgements, disputes, anti-bribery'],
+];
+const insertPqqSection = db.prepare(`
+  INSERT INTO pqq_template_sections
+  (id, template_id, section_id, section_number, section_title, max_points, pass_threshold, scoring_type, display_order, description, calculation_method, notes)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+pqqSections.forEach((s, idx) => {
+  insertPqqSection.run(uuidv4(), pqqTemplateId, s[0], s[1], s[2], s[3], s[4], s[5], s[1], s[6], s[5] === 'pass_fail' ? 'all_required' : 'sum_points', null);
+});
+
+const insertQTypeRef = db.prepare(`
+  INSERT OR REPLACE INTO pqq_question_types_reference (question_type, description, ui_component, data_fields, validation_logic)
+  VALUES (?, ?, ?, ?, ?)
+`);
+[
+  ['text_input', 'Single line text field', 'input type=text', 'value:string', 'length/format checks'],
+  ['textarea', 'Multi-line text area', 'textarea', 'value:string', 'length checks'],
+  ['number_input', 'Numeric input field', 'input type=number', 'value:number', 'min/max value checks'],
+  ['yes_no', 'Yes/No radio buttons', 'radio buttons', 'value:boolean', 'required selection'],
+  ['file_upload', 'Single file upload', 'file input', 'file:id,name,size', 'file type/size limits'],
+  ['file_upload_cert', 'File upload with cert number and expiry', 'file + text + date', 'file+cert+expiry', 'expiry validation'],
+  ['insurance_input', 'Insurance policy details', 'composite inputs', 'policy_number,coverage,expiry', 'coverage threshold + expiry'],
+].forEach(r => insertQTypeRef.run(...r));
+
+const insertValRuleRef = db.prepare(`
+  INSERT OR REPLACE INTO pqq_validation_rules_reference (validation_rule, description, validation_value, pass_condition, alert_logic)
+  VALUES (?, ?, ?, ?, ?)
+`);
+[
+  ['none', 'No validation applied', '', 'Always pass', ''],
+  ['regex', 'Regex pattern match', 'Pattern string', 'Matches pattern', 'Red if invalid format'],
+  ['email_format', 'Valid email format', '', 'RFC compliant email', 'Red if invalid email'],
+  ['min_value', 'Minimum numeric threshold', 'Numeric value', 'Input >= threshold', 'Red if below threshold'],
+  ['max_value', 'Maximum numeric threshold', 'Numeric value', 'Input <= threshold', 'Red if above threshold'],
+  ['min_coverage', 'Minimum insurance coverage', 'Coverage amount', 'Coverage >= threshold', 'Red if insufficient'],
+  ['pass_if_no', 'Pass only if answer is No', '', 'Value must be false/No', 'Red if Yes'],
+].forEach(r => insertValRuleRef.run(...r));
+
+const pqqQuestions = [
+  ['q_01', 'sec_01', 'Q1.1', 'Company legal name', 'text_input', 'string', 1, 0, 'none', null, 0],
+  ['q_02', 'sec_01', 'Q1.2', 'Company registration number', 'text_input', 'string', 1, 0, 'regex', '^[A-Z0-9-]{5,}$', 0],
+  ['q_03', 'sec_02', 'Q2.1', 'Turnover last year (€)', 'number_input', 'integer', 1, 5, 'min_value', '10000000', 0],
+  ['q_04', 'sec_02', 'Q2.2', 'Profit before tax (€)', 'number_input', 'integer', 1, 5, 'min_value', '1', 0],
+  ['q_05', 'sec_03', 'Q3.1', 'Employers Liability insurance', 'insurance_input', 'composite', 1, 5, 'min_coverage', '10000000', 0],
+  ['q_06', 'sec_03', 'Q3.2', 'Public Liability insurance', 'insurance_input', 'composite', 1, 5, 'min_coverage', '10000000', 0],
+  ['q_07', 'sec_04', 'Q4.1', 'Any conviction in last 5 years?', 'yes_no', 'boolean', 1, 0, 'pass_if_no', null, 1],
+  ['q_08', 'sec_04', 'Q4.2', 'Any outstanding tax judgements?', 'yes_no', 'boolean', 1, 0, 'pass_if_no', null, 1],
+  ['q_09', 'sec_05', 'Q5.1', 'ISO 45001 certificate', 'file_upload', 'pdf', 1, 7, 'none', null, 0],
+  ['q_10', 'sec_05', 'Q5.2', 'RIDDOR incidents last 12 months', 'number_input', 'integer', 1, 7, 'min_value', '0', 0],
+  ['q_11', 'sec_06', 'Q6.1', 'ISO 14001 certificate', 'file_upload', 'pdf', 1, 3, 'none', null, 0],
+  ['q_12', 'sec_06', 'Q6.2', 'Carbon reduction policy uploaded', 'file_upload', 'pdf', 1, 3, 'none', null, 0],
+  ['q_13', 'sec_07', 'Q7.1', 'ISO 9001 certificate', 'file_upload', 'pdf', 1, 3, 'none', null, 0],
+  ['q_14', 'sec_07', 'Q7.2', 'Non-conformance process described', 'textarea', 'string', 1, 3, 'none', null, 0],
+  ['q_15', 'sec_08', 'Q8.1', 'Project references over €50m (count)', 'number_input', 'integer', 1, 5, 'min_value', '3', 0],
+  ['q_16', 'sec_08', 'Q8.2', 'Data centre references uploaded', 'file_upload', 'pdf', 1, 5, 'none', null, 0],
+  ['q_17', 'sec_09', 'Q9.1', 'Project Manager CV', 'file_upload', 'pdf', 1, 3, 'none', null, 0],
+  ['q_18', 'sec_09', 'Q9.2', 'SHEQ Manager CV', 'file_upload', 'pdf', 1, 4, 'none', null, 0],
+  ['q_19', 'sec_10', 'Q10.1', 'Payment terms to subcontractors (days)', 'number_input', 'integer', 1, 2, 'max_value', '45', 0],
+  ['q_20', 'sec_10', 'Q10.2', 'Modern slavery policy uploaded', 'file_upload', 'pdf', 1, 1, 'none', null, 0],
+  ['q_21', 'sec_11', 'Q11.1', 'BIM Level achieved', 'number_input', 'integer', 1, 2, 'min_value', '2', 0],
+  ['q_22', 'sec_11', 'Q11.2', 'BIM execution plan uploaded', 'file_upload', 'pdf', 1, 1, 'none', null, 0],
+  ['q_23', 'sec_12', 'Q12.1', 'Local employment commitment (%)', 'number_input', 'decimal', 1, 1.5, 'min_value', '5', 0],
+  ['q_24', 'sec_12', 'Q12.2', 'EDI policy uploaded', 'file_upload', 'pdf', 1, 1.5, 'none', null, 0],
+  ['q_25', 'sec_13', 'Q13.1', 'Cyber Essentials certification', 'file_upload', 'pdf', 1, 2, 'none', null, 0],
+  ['q_26', 'sec_13', 'Q13.2', 'Any data breach in last 3 years?', 'yes_no', 'boolean', 1, 1, 'pass_if_no', null, 0],
+  ['q_27', 'sec_14', 'Q14.1', 'Any outstanding judgements?', 'yes_no', 'boolean', 1, 0, 'pass_if_no', null, 1],
+  ['q_28', 'sec_14', 'Q14.2', 'Anti-bribery policy uploaded', 'file_upload', 'pdf', 1, 0, 'none', null, 0],
+];
+const insertPqqQuestion = db.prepare(`
+  INSERT INTO pqq_template_questions
+  (id, template_id, question_id, section_id, question_number, question_text, question_type, data_type, required, points, validation_rule, validation_value, autofail_if_yes, apply_amber_if_yes, apply_bonus_if_no, evidence_required)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+pqqQuestions.forEach((q) => {
+  insertPqqQuestion.run(
+    uuidv4(),
+    pqqTemplateId,
+    q[0], q[1], q[2], q[3], q[4], q[5],
+    q[6] ? 1 : 0,
+    q[7],
+    q[8],
+    q[9],
+    q[10] ? 1 : 0,
+    0,
+    0,
+    q[4].includes('file_upload') || q[4] === 'insurance_input' ? 'Supporting evidence required' : null
+  );
+});
+
+const insertExpiryCfg = db.prepare(`
+  INSERT INTO pqq_expiry_tracking_config (id, template_id, item_category, has_expiry, amber_alert_days, red_alert_days, escalation_logic, suspension_on_expiry)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`);
+[
+  ['insurance_policy', 1, 60, 30, '60d: Partner + Contractor; 30d: + Client VP', 1],
+  ['iso_certificate', 1, 90, 60, '90d: Partner only; 60d: + Contractor', 0],
+  ['policy_document', 1, 365, 0, 'No alerts (amber after 12mo)', 0],
+  ['professional_qualification', 1, 90, 30, '90d: Partner only; 30d: + Contractor', 0],
+  ['credit_rating', 1, 365, 0, 'Amber after 12mo, no escalation', 0],
+].forEach((e) => {
+  insertExpiryCfg.run(uuidv4(), pqqTemplateId, e[0], e[1], e[2], e[3], e[4], e[5]);
+});
 console.log('✓ Created PQQ template: 14-Section Construction PQQ');
 
 // ===== PQQ INVITATIONS & SUBMISSIONS (demo flow) =====
@@ -533,42 +710,8 @@ insertDAR.run(uuidv4(), vp.id, sub1.id, 'qqi_level6_electrical', 'QQI Level 6 El
 insertDAR.run(uuidv4(), vp.id, sub2.id, 'qqi_level5_scaffolding', 'QQI Level 5 Scaffolding', ++darOrder);
 console.log('✓ Created DAR requirements (Client → Contractor → Subcontractors)');
 
-// ===== DAR SATISFACTION – pre-seed for Sean so the demo shows real progress =====
-// Sean is verified (RTW auto-satisfied via is_verified), and has SafePass, Manual Handling,
-// Working at Heights, BEng Electrical, QQI L6 Electrical credentials.
-// Map his credentials to DAR requirements and insert worker_dar_satisfaction records.
-const darKeyToCredType = {
-  safepass: 'SafePass',
-  manual_handling: 'ManualHandling',
-  working_at_heights: 'WorkingAtHeights',
-  beng_electrical: 'BEng_Electrical',
-  qqi_level6_electrical: 'QQI_L6_Electrical',
-};
-
-const seanDARRows = db.prepare('SELECT id, requirement_key FROM project_dar_requirements WHERE project_id = ?').all(vp.id);
-const insertDARSat = db.prepare(`
-  INSERT OR IGNORE INTO worker_dar_satisfaction (id, worker_id, project_id, dar_requirement_id, status, credential_id, submitted_at)
-  VALUES (?, ?, ?, ?, 'satisfied', ?, datetime('now'))
-`);
-
-const seanId = users.workers[0].id;
-const satInserts = db.transaction(() => {
-  for (const darRow of seanDARRows) {
-    if (darRow.requirement_key === 'rtw') {
-      // RTW is satisfied via is_verified – no credential needed
-      insertDARSat.run(uuidv4(), seanId, vp.id, darRow.id, null);
-      continue;
-    }
-    const credType = darKeyToCredType[darRow.requirement_key];
-    if (!credType) continue; // e.g. qqi_level5_scaffolding – Sean doesn't have it
-    const credRow = db.prepare('SELECT id FROM credentials WHERE worker_id = ? AND type = ? LIMIT 1').get(seanId, credType);
-    if (credRow) {
-      insertDARSat.run(uuidv4(), seanId, vp.id, darRow.id, credRow.id);
-    }
-  }
-});
-satInserts();
-console.log(`✓ Pre-seeded DAR satisfaction for Sean Murphy (RTW + 4 credential-matched requirements)`);
+// ===== DAR SATISFACTION =====
+// Intentionally not pre-seeding Sean DAR/RTW satisfaction so live verification flow can be demonstrated.
 
 // ===== AUDIT LOG ENTRIES =====
 const insertAudit = db.prepare(`

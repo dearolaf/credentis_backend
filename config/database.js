@@ -189,6 +189,96 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 
+  -- PQQ template metadata (extended import model)
+  CREATE TABLE IF NOT EXISTS pqq_template_metadata (
+    template_id TEXT PRIMARY KEY,
+    template_name TEXT NOT NULL,
+    template_version TEXT,
+    standard_alignment TEXT,
+    project_type TEXT,
+    min_project_value INTEGER,
+    total_sections INTEGER,
+    total_questions INTEGER,
+    max_score INTEGER DEFAULT 100,
+    pass_threshold INTEGER DEFAULT 70,
+    default_deadline_days INTEGER DEFAULT 14,
+    status TEXT DEFAULT 'active' CHECK(status IN ('active', 'draft', 'archived')),
+    created_date TEXT,
+    last_modified TEXT,
+    FOREIGN KEY (template_id) REFERENCES pqq_templates(id)
+  );
+
+  -- PQQ section configuration
+  CREATE TABLE IF NOT EXISTS pqq_template_sections (
+    id TEXT PRIMARY KEY,
+    template_id TEXT NOT NULL,
+    section_id TEXT NOT NULL,
+    section_number INTEGER NOT NULL,
+    section_title TEXT NOT NULL,
+    max_points INTEGER DEFAULT 0,
+    pass_threshold INTEGER DEFAULT 0,
+    scoring_type TEXT DEFAULT 'scored' CHECK(scoring_type IN ('scored', 'pass_fail')),
+    display_order INTEGER DEFAULT 0,
+    description TEXT,
+    calculation_method TEXT,
+    notes TEXT,
+    FOREIGN KEY (template_id) REFERENCES pqq_templates(id)
+  );
+
+  -- Question type reference
+  CREATE TABLE IF NOT EXISTS pqq_question_types_reference (
+    question_type TEXT PRIMARY KEY,
+    description TEXT,
+    ui_component TEXT,
+    data_fields TEXT,
+    validation_logic TEXT
+  );
+
+  -- Validation rules reference
+  CREATE TABLE IF NOT EXISTS pqq_validation_rules_reference (
+    validation_rule TEXT PRIMARY KEY,
+    description TEXT,
+    validation_value TEXT,
+    pass_condition TEXT,
+    alert_logic TEXT
+  );
+
+  -- Expiry tracking configuration
+  CREATE TABLE IF NOT EXISTS pqq_expiry_tracking_config (
+    id TEXT PRIMARY KEY,
+    template_id TEXT NOT NULL,
+    item_category TEXT NOT NULL,
+    has_expiry INTEGER DEFAULT 1,
+    amber_alert_days INTEGER,
+    red_alert_days INTEGER,
+    escalation_logic TEXT,
+    suspension_on_expiry INTEGER DEFAULT 0,
+    FOREIGN KEY (template_id) REFERENCES pqq_templates(id)
+  );
+
+  -- PQQ questions
+  CREATE TABLE IF NOT EXISTS pqq_template_questions (
+    id TEXT PRIMARY KEY,
+    template_id TEXT NOT NULL,
+    question_id TEXT NOT NULL,
+    section_id TEXT NOT NULL,
+    question_number TEXT,
+    question_text TEXT NOT NULL,
+    question_type TEXT NOT NULL,
+    data_type TEXT,
+    required INTEGER DEFAULT 0,
+    points REAL DEFAULT 0,
+    validation_rule TEXT,
+    validation_value TEXT,
+    autofail_if_yes INTEGER DEFAULT 0,
+    apply_amber_if_yes INTEGER DEFAULT 0,
+    apply_bonus_if_no INTEGER DEFAULT 0,
+    apply_afr_red_days INTEGER,
+    apply_afr_amber_days INTEGER,
+    evidence_required TEXT,
+    FOREIGN KEY (template_id) REFERENCES pqq_templates(id)
+  );
+
   -- PQQ Invitations (client/contractor invites partner to submit PQQ for a VP)
   CREATE TABLE IF NOT EXISTS pqq_invitations (
     id TEXT PRIMARY KEY,
@@ -218,6 +308,10 @@ db.exec(`
     company_profile TEXT,
     financial_status TEXT,
     compliance_status TEXT,
+    answers_json TEXT,
+    section_scores_json TEXT,
+    total_score REAL DEFAULT 0,
+    overall_status TEXT,
     documents TEXT,
     reviewed_by TEXT,
     review_notes TEXT,
@@ -293,6 +387,18 @@ try {
   const cols = db.prepare("PRAGMA table_info(pqq_submissions)").all();
   if (cols.length && !cols.find(c => c.name === 'invitation_id')) {
     db.exec('ALTER TABLE pqq_submissions ADD COLUMN invitation_id TEXT');
+  }
+  if (cols.length && !cols.find(c => c.name === 'answers_json')) {
+    db.exec('ALTER TABLE pqq_submissions ADD COLUMN answers_json TEXT');
+  }
+  if (cols.length && !cols.find(c => c.name === 'section_scores_json')) {
+    db.exec('ALTER TABLE pqq_submissions ADD COLUMN section_scores_json TEXT');
+  }
+  if (cols.length && !cols.find(c => c.name === 'total_score')) {
+    db.exec('ALTER TABLE pqq_submissions ADD COLUMN total_score REAL DEFAULT 0');
+  }
+  if (cols.length && !cols.find(c => c.name === 'overall_status')) {
+    db.exec('ALTER TABLE pqq_submissions ADD COLUMN overall_status TEXT');
   }
 } catch (_) {}
 // Migration: add PQQ fields to projects if missing
