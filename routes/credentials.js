@@ -8,10 +8,13 @@ const { mockSafePassCheck, apiResponse } = require('../utils/helpers');
 
 const router = express.Router();
 
-function isNonExpiringQQIElectrical(type, title) {
+function isNonExpiringQualification(type, title) {
   const normalizedType = (type || '').toLowerCase();
   const normalizedTitle = (title || '').toLowerCase();
   return normalizedType === 'qqi_l6_electrical' ||
+    normalizedType === 'beng_electrical' ||
+    (normalizedTitle.includes('beng') && normalizedTitle.includes('electrical')) ||
+    (normalizedTitle.includes('bachelor') && normalizedTitle.includes('electrical') && normalizedTitle.includes('engineering')) ||
     (normalizedTitle.includes('qqi') &&
       normalizedTitle.includes('electrical') &&
       normalizedTitle.includes('apprenticeship'));
@@ -58,7 +61,7 @@ router.get('/', authenticate, (req, res) => {
 
     // Add compliance status and project association to each credential
     const enrichedCreds = credentials.map((cred, index) => {
-      const nonExpiring = isNonExpiringQQIElectrical(cred.type, cred.title);
+      const nonExpiring = isNonExpiringQualification(cred.type, cred.title);
       const compliance = nonExpiring
         ? { status: 'valid', color: 'green' }
         : (cred.expiry_date ? mockSafePassCheck(cred.expiry_date) : { status: 'valid', color: 'green' });
@@ -123,8 +126,8 @@ router.post('/', authenticate, (req, res) => {
     );
 
     // Demo rule: QQI Electrical Apprenticeship is a permanent qualification (no expiry)
-    const isNonExpiringQualification = isNonExpiringQQIElectrical(type, title);
-    const resolvedExpiryDate = isNonExpiringQualification ? null : expiry_date;
+    const nonExpiringQualification = isNonExpiringQualification(type, title);
+    const resolvedExpiryDate = nonExpiringQualification ? null : expiry_date;
 
     const id = uuidv4();
     db.prepare(`
@@ -159,7 +162,7 @@ router.post('/:id/verify', authenticate, (req, res) => {
     if (!credential) return apiResponse(res, 404, null, 'Credential not found');
 
     const verification = MockBlockchain.verifyCredential(credential.vc_hash);
-    const nonExpiring = isNonExpiringQQIElectrical(credential.type, credential.title);
+    const nonExpiring = isNonExpiringQualification(credential.type, credential.title);
     const expiryCheck = nonExpiring ? null : (credential.expiry_date ? mockSafePassCheck(credential.expiry_date) : null);
 
     return apiResponse(res, 200, { verification, expiryCheck }, 'Credential verified');

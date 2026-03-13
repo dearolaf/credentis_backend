@@ -203,7 +203,7 @@ const projectData = [
     client_idx: 0,
     start_date: '2026-06-10',
     end_date: '2027-06-10',
-    compliance: ['SafePass', 'Working at Heights', 'QQI Level 5 Scaffolding', 'Site Induction'],
+    compliance: ['SafePass', 'Working at Heights', 'Professional and Academic Qualifications', 'Site Induction'],
     max_workers: 110,
   },
   {
@@ -215,7 +215,7 @@ const projectData = [
     client_idx: 0,
     start_date: '2026-07-01',
     end_date: '2027-02-28',
-    compliance: ['SafePass', 'Manual Handling', 'BEng Electrical Engineering', 'QQI Level 6 Electrical qualification'],
+    compliance: ['SafePass', 'Manual Handling', 'Professional and Academic Qualifications', 'Arc Flash Awareness'],
     max_workers: 80,
   },
 ];
@@ -377,8 +377,8 @@ const insertCredentials = db.transaction(() => {
     selectedCreds.forEach(cred => {
       const issueDate = new Date(2024, Math.floor(Math.random() * 12), Math.floor(Math.random() * 28) + 1);
       let expiryDate;
-      if (cred.type === 'QQI_L6_Electrical') {
-        // QQI Electrical Apprenticeship does not expire
+      if (cred.type === 'QQI_L6_Electrical' || cred.type === 'BEng_Electrical') {
+        // QQI Electrical Apprenticeship and BEng qualifications do not expire
         expiryDate = null;
       } else {
         const rand = Math.random();
@@ -402,11 +402,11 @@ const insertCredentials = db.transaction(() => {
   });
 });
 insertCredentials();
-console.log(`✓ Created ${credCount} credentials across ${users.workers.length} workers (Sean has BEng + QQI L6 Electrical Apprenticeship for verification)`);
+console.log(`✓ Created ${credCount} credentials across ${users.workers.length} workers (Sean has non-expiring BEng + QQI L6 Electrical Apprenticeship for verification)`);
 
 // ===== BADGES =====
 const badgeTypes = [
-  { type: 'compliance', title: 'SafePass Refresher Complete', description: 'Completed SafePass refresher training on time' },
+  { type: 'compliance', title: 'SafePass Valid', description: 'Maintains a currently valid SafePass certification' },
   { type: 'compliance', title: 'Site Induction Complete', description: 'Passed site induction assessment' },
   { type: 'skills', title: 'Arc Flash Awareness', description: 'Demonstrated arc flash safety competence' },
   { type: 'safety', title: 'Zero Accidents - 30 Days', description: '30 consecutive days without safety incidents' },
@@ -703,11 +703,8 @@ insertDAR.run(uuidv4(), vp.id, client.id, 'rtw', 'Right-to-Work status (from ide
 insertDAR.run(uuidv4(), vp.id, contractor.id, 'safepass', 'SafePass', ++darOrder);
 insertDAR.run(uuidv4(), vp.id, contractor.id, 'manual_handling', 'Manual Handling', ++darOrder);
 insertDAR.run(uuidv4(), vp.id, contractor.id, 'working_at_heights', 'Working at Heights', ++darOrder);
-// ElecSpec Electrical – professional / academic
-insertDAR.run(uuidv4(), vp.id, sub1.id, 'beng_electrical', 'BEng Electrical Engineering', ++darOrder);
-insertDAR.run(uuidv4(), vp.id, sub1.id, 'qqi_level6_electrical', 'QQI Level 6 Electrical qualification', ++darOrder);
-// Sticks and Planks Scaffolding – trade
-insertDAR.run(uuidv4(), vp.id, sub2.id, 'qqi_level5_scaffolding', 'QQI Level 5 Scaffolding', ++darOrder);
+// Subcontractor-level request should be generic; professional chooses which qualifications to submit.
+insertDAR.run(uuidv4(), vp.id, sub1.id, 'professional_academic_qualifications', 'Submit Professional and Academic Qualifications', ++darOrder);
 console.log('✓ Created DAR requirements (Client → Contractor → Subcontractors)');
 
 // ===== DAR SATISFACTION =====
