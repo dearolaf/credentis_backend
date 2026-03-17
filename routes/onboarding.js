@@ -62,6 +62,18 @@ const applyValidationRule = (value, rule, ruleValue) => {
 };
 
 const evaluatePQQ = (templateMeta, sections, questions, answers) => {
+  const hasAnswerValue = (value) => {
+    if (value == null) return false;
+    if (typeof value === 'string') return value.trim() !== '';
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value === 'boolean') return true;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'object') {
+      return Object.values(value).some((v) => hasAnswerValue(v));
+    }
+    return String(value).trim() !== '';
+  };
+
   const sectionsById = Object.fromEntries(sections.map((s) => [s.section_id, s]));
   const grouped = {};
   questions.forEach((q) => {
@@ -83,7 +95,7 @@ const evaluatePQQ = (templateMeta, sections, questions, answers) => {
 
     for (const q of qs) {
       const rawValue = answers?.[q.question_id];
-      const answered = rawValue != null && String(rawValue).trim() !== '';
+      const answered = hasAnswerValue(rawValue);
       const required = toBool(q.required);
       const isMissing = required && !answered;
       if (isMissing) requiredMissing = true;
@@ -814,33 +826,89 @@ router.get('/pqq/:id/expiry-alerts', authenticate, (req, res) => {
 
     const answers = submission.answers_json ? JSON.parse(submission.answers_json) : {};
     const cfg = db.prepare(`
-      SELECT item_category, amber_alert_days, red_alert_days, escalation_logic, suspension_on_expiry
+      SELECT item_category, has_expiry, amber_alert_days, red_alert_days, escalation_logic, suspension_on_expiry
       FROM pqq_expiry_tracking_config
       WHERE template_id = ?
     `).all(submission.pqq_template_id);
+    const questions = db.prepare(`
+      SELECT question_id, question_text, question_type, apply_afr_red_days, apply_afr_amber_days
+      FROM pqq_template_questions
+      WHERE template_id = ?
+    `).all(submission.pqq_template_id);
+    const questionById = Object.fromEntries((questions || []).map((q) => [q.question_id, q]));
+    const cfgByCategory = Object.fromEntries((cfg || []).map((c) => [String(c.item_category || '').toLowerCase(), c]));
 
-    const insuranceCfg = cfg.find((c) => c.item_category === 'insurance_policy');
+    const inferCategory = (q = {}) => {
+      const text = `${q.question_text || ''}`.toLowerCase();
+      if ((q.question_type || '').toLowerCase() === 'insurance_input' || text.includes('insurance')) return 'insurance_policy';
+      if (text.includes('iso')) return 'iso_certificate';
+      if (text.includes('qualification')) return 'professional_qualification';
+      if (text.includes('credit')) return 'credit_rating';
+      return 'policy_document';
+    };
+
+    const parseExpiryDate = (value) => {
+      if (!value) return null;
+      if (typeof value === 'object') return value.expiry_date || value.expiryDate || null;
+      return null;
+    };
+
     const alerts = [];
-    if (insuranceCfg) {
-      const today = new Date();
-      Object.entries(answers).forEach(([qid, value]) => {
-        if (value && typeof value === 'object' && value.expiry_date) {
-          const expiry = new Date(value.expiry_date);
-          const daysToExpiry = Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
-          let level = 'ok';
-          if (insuranceCfg.red_alert_days != null && daysToExpiry <= Number(insuranceCfg.red_alert_days)) level = 'red';
-          else if (insuranceCfg.amber_alert_days != null && daysToExpiry <= Number(insuranceCfg.amber_alert_days)) level = 'amber';
-          alerts.push({
-            question_id: qid,
-            expiry_date: value.expiry_date,
-            days_to_expiry: daysToExpiry,
-            level,
-            escalation_logic: insuranceCfg.escalation_logic,
-            suspension_on_expiry: !!insuranceCfg.suspension_on_expiry,
-          });
-        }
+    const today = new Date();
+    Object.entries(answers).forEach(([qid, value]) => {
+      const expiryDateRaw = parseExpiryDate(value);
+      if (!expiryDateRaw) return;
+
+      const q = questionById[qid] || {};
+      const category = inferCategory(q);
+      const categoryCfg = cfgByCategory[category];
+      if (categoryCfg && Number(categoryCfg.has_expiry) === 0) return;
+
+      const redFromQuestion = q.apply_afr_red_days != null ? Number(q.apply_afr_red_days) : null;
+      const amberFromQuestion = q.apply_afr_amber_days != null ? Number(q.apply_afr_amber_days) : null;
+      const redDays = redFromQuestion != null && Number.isFinite(redFromQuestion)
+        ? redFromQuestion
+        : (categoryCfg?.red_alert_days != null ? Number(categoryCfg.red_alert_days) : null);
+      const amberDays = amberFromQuestion != null && Number.isFinite(amberFromQuestion)
+        ? amberFromQuestion
+        : (categoryCfg?.amber_alert_days != null ? Number(categoryCfg.amber_alert_days) : null);
+
+      const expiry = new Date(expiryDateRaw);
+      if (Number.isNaN(expiry.getTime())) {
+        alerts.push({
+          question_id: qid,
+          question_text: q.question_text || null,
+          expiry_date: expiryDateRaw,
+          days_to_expiry: null,
+          level: 'invalid_date',
+          item_category: category,
+          escalation_logic: categoryCfg?.escalation_logic || null,
+          suspension_on_expiry: !!categoryCfg?.suspension_on_expiry,
+        });
+        return;
+      }
+
+      const daysToExpiry = Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
+      let level = 'ok';
+      if (redDays != null && Number.isFinite(redDays) && daysToExpiry <= redDays) level = 'red';
+      else if (amberDays != null && Number.isFinite(amberDays) && daysToExpiry <= amberDays) level = 'amber';
+
+      alerts.push({
+        question_id: qid,
+        question_text: q.question_text || null,
+        expiry_date: expiryDateRaw,
+        days_to_expiry: daysToExpiry,
+        level,
+        item_category: category,
+        escalation_logic: categoryCfg?.escalation_logic || null,
+        suspension_on_expiry: !!categoryCfg?.suspension_on_expiry,
+        thresholds: {
+          red_days: redDays,
+          amber_days: amberDays,
+          source: redFromQuestion != null || amberFromQuestion != null ? 'question' : 'category',
+        },
       });
-    }
+    });
 
     return apiResponse(res, 200, {
       submission_id: submission.id,

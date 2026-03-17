@@ -22,9 +22,35 @@ const parseBool = (v) => {
   return ['yes', 'y', 'true', '1'].includes(s);
 };
 
+const normalizeKey = (key) =>
+  String(key || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-\/]+/g, '_')
+    .replace(/[()]/g, '')
+    .replace(/_+/g, '_');
+
+const normalizeRowKeys = (row = {}) => {
+  const out = {};
+  Object.entries(row || {}).forEach(([k, v]) => {
+    out[normalizeKey(k)] = v;
+  });
+  return out;
+};
+
+const pick = (row, aliases = [], fallback = null) => {
+  for (const alias of aliases) {
+    const key = normalizeKey(alias);
+    if (Object.prototype.hasOwnProperty.call(row, key) && row[key] != null && row[key] !== '') {
+      return row[key];
+    }
+  }
+  return fallback;
+};
+
 const rowsForSheet = (workbook, sheetName) => {
   if (!sheetName || !workbook.Sheets[sheetName]) return [];
-  return XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: null });
+  return XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: null }).map(normalizeRowKeys);
 };
 
 const findSheet = (sheetNames, aliases) => {
@@ -44,29 +70,30 @@ const parseMetadata = (rows, fallback = {}) => {
     };
   }
 
-  if (rows[0].template_id || rows[0].template_name) {
+  const r0 = rows[0];
+  if (pick(r0, ['template_id']) || pick(r0, ['template_name'])) {
     return {
-      template_id: rows[0].template_id || fallback.template_id || 'tpl-imported-pqq',
-      template_name: rows[0].template_name || fallback.template_name || 'Imported PQQ Template',
-      template_version: rows[0].template_version || null,
-      standard_alignment: rows[0].standard_alignment || null,
-      project_type: rows[0].project_type || null,
-      min_project_value: parseNum(rows[0].min_project_value, null),
-      total_sections: parseNum(rows[0].total_sections, null),
-      total_questions: parseNum(rows[0].total_questions, null),
-      max_score: parseNum(rows[0].max_score, 100),
-      pass_threshold: parseNum(rows[0].pass_threshold, 70),
-      default_deadline_days: parseNum(rows[0].default_deadline_days, 14),
-      status: rows[0].status || 'active',
-      created_date: rows[0].created_date || null,
-      last_modified: rows[0].last_modified || null,
+      template_id: pick(r0, ['template_id']) || fallback.template_id || 'tpl-imported-pqq',
+      template_name: pick(r0, ['template_name']) || fallback.template_name || 'Imported PQQ Template',
+      template_version: pick(r0, ['template_version', 'version']) || null,
+      standard_alignment: pick(r0, ['standard_alignment']) || null,
+      project_type: pick(r0, ['project_type']) || null,
+      min_project_value: parseNum(pick(r0, ['min_project_value']), null),
+      total_sections: parseNum(pick(r0, ['total_sections']), null),
+      total_questions: parseNum(pick(r0, ['total_questions']), null),
+      max_score: parseNum(pick(r0, ['max_score']), 100),
+      pass_threshold: parseNum(pick(r0, ['pass_threshold']), 70),
+      default_deadline_days: parseNum(pick(r0, ['default_deadline_days']), 14),
+      status: pick(r0, ['status']) || 'active',
+      created_date: pick(r0, ['created_date']) || null,
+      last_modified: pick(r0, ['last_modified']) || null,
     };
   }
 
   const kv = {};
   rows.forEach((r) => {
-    const key = toSlug(r.key || r.field || r.name);
-    if (key) kv[key] = r.value;
+    const key = toSlug(pick(r, ['key', 'field', 'name']));
+    if (key) kv[key] = pick(r, ['value']);
   });
 
   return {
@@ -89,52 +116,52 @@ const parseMetadata = (rows, fallback = {}) => {
 
 const parseSections = (rows) =>
   rows
-    .filter((r) => (r.section_title || r.title || r.section || '').toString().trim())
+    .filter((r) => String(pick(r, ['section_title', 'title', 'section'], '')).trim())
     .map((r, idx) => ({
-      section_id: r.section_id || toSlug(r.section_title || r.title || r.section) || `sec_${String(idx + 1).padStart(2, '0')}`,
-      section_number: parseNum(r.section_number, idx + 1),
-      section_title: r.section_title || r.title || r.section,
-      max_points: parseNum(r.max_points, 0),
-      pass_threshold: parseNum(r.pass_threshold, 0),
-      scoring_type: r.scoring_type || 'scored',
-      display_order: parseNum(r.display_order, idx + 1),
-      description: r.description || null,
-      calculation_method: r.calculation_method || null,
-      notes: r.notes || null,
+      section_id: pick(r, ['section_id']) || toSlug(pick(r, ['section_title', 'title', 'section'])) || `sec_${String(idx + 1).padStart(2, '0')}`,
+      section_number: parseNum(pick(r, ['section_number', 'number']), idx + 1),
+      section_title: pick(r, ['section_title', 'title', 'section']),
+      max_points: parseNum(pick(r, ['max_points', 'max_score']), 0),
+      pass_threshold: parseNum(pick(r, ['pass_threshold']), 0),
+      scoring_type: pick(r, ['scoring_type']) || 'scored',
+      display_order: parseNum(pick(r, ['display_order']), idx + 1),
+      description: pick(r, ['description']) || null,
+      calculation_method: pick(r, ['calculation_method']) || null,
+      notes: pick(r, ['notes']) || null,
     }));
 
 const parseQuestions = (rows) =>
   rows
-    .filter((r) => (r.question_text || r.question || '').toString().trim())
+    .filter((r) => String(pick(r, ['question_text', 'question'], '')).trim())
     .map((r, idx) => ({
-      question_id: r.question_id || `q_${String(idx + 1).padStart(3, '0')}`,
-      section_id: r.section_id || toSlug(r.section || r.section_title),
-      question_number: r.question_number || String(idx + 1),
-      question_text: r.question_text || r.question,
-      question_type: r.question_type || 'text_input',
-      data_type: r.data_type || 'string',
-      required: parseBool(r.required),
-      points: parseNum(r.points, 0),
-      validation_rule: r.validation_rule || 'none',
-      validation_value: r.validation_value != null ? String(r.validation_value) : null,
-      autofail_if_yes: parseBool(r.autofail_if_yes),
-      apply_amber_if_yes: parseBool(r.apply_amber_if_yes),
-      apply_bonus_if_no: parseBool(r.apply_bonus_if_no),
-      apply_afr_red_days: parseNum(r.apply_afr_red_days, null),
-      apply_afr_amber_days: parseNum(r.apply_afr_amber_days, null),
-      evidence_required: r.evidence_required || null,
+      question_id: pick(r, ['question_id', 'id']) || `q_${String(idx + 1).padStart(3, '0')}`,
+      section_id: pick(r, ['section_id']) || toSlug(pick(r, ['section', 'section_title'])),
+      question_number: pick(r, ['question_number', 'number']) || String(idx + 1),
+      question_text: pick(r, ['question_text', 'question']),
+      question_type: pick(r, ['question_type']) || 'text_input',
+      data_type: pick(r, ['data_type']) || 'string',
+      required: parseBool(pick(r, ['required'], false)),
+      points: parseNum(pick(r, ['points', 'score']), 0),
+      validation_rule: pick(r, ['validation_rule']) || 'none',
+      validation_value: pick(r, ['validation_value']) != null ? String(pick(r, ['validation_value'])) : null,
+      autofail_if_yes: parseBool(pick(r, ['autofail_if_yes'], false)),
+      apply_amber_if_yes: parseBool(pick(r, ['apply_amber_if_yes'], false)),
+      apply_bonus_if_no: parseBool(pick(r, ['apply_bonus_if_no'], false)),
+      apply_afr_red_days: parseNum(pick(r, ['apply_afr_red_days', 'afr_red_days', 'red_alert_days']), null),
+      apply_afr_amber_days: parseNum(pick(r, ['apply_afr_amber_days', 'afr_amber_days', 'amber_alert_days']), null),
+      evidence_required: pick(r, ['evidence_required']) || null,
     }));
 
 const parseExpiryTracking = (rows) =>
   rows
-    .filter((r) => (r.item_category || r.category || '').toString().trim())
+    .filter((r) => String(pick(r, ['item_category', 'category'], '')).trim())
     .map((r) => ({
-      item_category: r.item_category || r.category,
-      has_expiry: parseBool(r.has_expiry),
-      amber_alert_days: parseNum(r.amber_alert_days, null),
-      red_alert_days: parseNum(r.red_alert_days, null),
-      escalation_logic: r.escalation_logic || null,
-      suspension_on_expiry: parseBool(r.suspension_on_expiry),
+      item_category: pick(r, ['item_category', 'category']),
+      has_expiry: parseBool(pick(r, ['has_expiry'], false)),
+      amber_alert_days: parseNum(pick(r, ['amber_alert_days']), null),
+      red_alert_days: parseNum(pick(r, ['red_alert_days']), null),
+      escalation_logic: pick(r, ['escalation_logic']) || null,
+      suspension_on_expiry: parseBool(pick(r, ['suspension_on_expiry'], false)),
     }));
 
 const parseReferenceRows = (rows, keyColumn, defaults = []) => {
