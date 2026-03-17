@@ -390,7 +390,17 @@ router.get('/templates/import-history', authenticate, requireRole('client', 'adm
  */
 router.post('/templates/import', authenticate, requireRole('client', 'admin'), (req, res) => {
   try {
-    const result = upsertTemplateBundle(db, req.body || {});
+    const bundle = req.body || {};
+    if (!Array.isArray(bundle.sections) || bundle.sections.length === 0) {
+      return apiResponse(res, 400, null, 'Template import failed: no sections found in payload');
+    }
+    if (!Array.isArray(bundle.questions) || bundle.questions.length === 0) {
+      return apiResponse(res, 400, null, 'Template import failed: no questions found in payload');
+    }
+    if (!bundle.metadata?.template_id || bundle.metadata.template_id === 'tpl-imported-pqq') {
+      return apiResponse(res, 400, null, 'Template import failed: metadata.template_id is missing or defaulted');
+    }
+    const result = upsertTemplateBundle(db, bundle);
     writeTemplateImportAudit(req.user.id, result.template_id, 'json_bundle', result);
     return apiResponse(res, 201, result, 'PQQ template imported');
   } catch (error) {
@@ -417,6 +427,30 @@ router.post('/templates/import-xlsx', authenticate, requireRole('client', 'admin
     const bundle = workbook_base64
       ? parseTemplateFromBase64(workbook_base64, overrides)
       : parseTemplateFromXlsxFile(file_path, overrides);
+    if (!Array.isArray(bundle.sections) || bundle.sections.length === 0) {
+      return apiResponse(
+        res,
+        400,
+        null,
+        'Import failed: no sections parsed. Ensure sheet tab contains "section" and has section_title/section_number columns.'
+      );
+    }
+    if (!Array.isArray(bundle.questions) || bundle.questions.length === 0) {
+      return apiResponse(
+        res,
+        400,
+        null,
+        'Import failed: no questions parsed. Ensure sheet tab contains "question" and has question_text/section_id/question_type columns.'
+      );
+    }
+    if (!bundle.metadata?.template_id || bundle.metadata.template_id === 'tpl-imported-pqq') {
+      return apiResponse(
+        res,
+        400,
+        null,
+        'Import failed: metadata.template_id was not detected. Ensure metadata sheet has field/value rows or template_id column.'
+      );
+    }
     const result = upsertTemplateBundle(db, bundle);
     writeTemplateImportAudit(
       req.user.id,

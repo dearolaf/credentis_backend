@@ -147,8 +147,8 @@ const parseQuestions = (rows) =>
       autofail_if_yes: parseBool(pick(r, ['autofail_if_yes'], false)),
       apply_amber_if_yes: parseBool(pick(r, ['apply_amber_if_yes'], false)),
       apply_bonus_if_no: parseBool(pick(r, ['apply_bonus_if_no'], false)),
-      apply_afr_red_days: parseNum(pick(r, ['apply_afr_red_days', 'afr_red_days', 'red_alert_days']), null),
-      apply_afr_amber_days: parseNum(pick(r, ['apply_afr_amber_days', 'afr_amber_days', 'amber_alert_days']), null),
+      apply_afr_red_days: parseNum(pick(r, ['apply_afr_red_days', 'afr_red_days', 'red_alert_days', 'expiry_alert_red_days']), null),
+      apply_afr_amber_days: parseNum(pick(r, ['apply_afr_amber_days', 'afr_amber_days', 'amber_alert_days', 'expiry_alert_amber_days']), null),
       evidence_required: pick(r, ['evidence_required']) || null,
     }));
 
