@@ -803,8 +803,13 @@ router.get('/pqq/:id/expiry-alerts', authenticate, (req, res) => {
     `).get(req.params.id);
     if (!submission) return apiResponse(res, 404, null, 'PQQ submission not found');
     if (req.user.role !== 'admin' && req.user.id !== submission.company_id) {
+      const invitation = submission.id
+        ? db.prepare('SELECT inviter_id FROM pqq_invitations WHERE pqq_submission_id = ?').get(submission.id)
+        : null;
       const project = db.prepare('SELECT client_id FROM projects WHERE id = ?').get(submission.project_id);
-      if (!project || project.client_id !== req.user.id) return apiResponse(res, 403, null, 'Forbidden');
+      const isClientOwner = !!project && project.client_id === req.user.id;
+      const isInvitationOwner = !!invitation && invitation.inviter_id === req.user.id;
+      if (!isClientOwner && !isInvitationOwner) return apiResponse(res, 403, null, 'Forbidden');
     }
 
     const answers = submission.answers_json ? JSON.parse(submission.answers_json) : {};
@@ -844,6 +849,129 @@ router.get('/pqq/:id/expiry-alerts', authenticate, (req, res) => {
     }, 'PQQ expiry alerts evaluated');
   } catch (error) {
     console.error('PQQ expiry alerts error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * POST /api/onboarding/pqq/:id/renew - Renew PQQ submission (partner side)
+ * Body: { answers? }
+ */
+router.post('/pqq/:id/renew', authenticate, requireRole('contractor', 'subcontractor'), (req, res) => {
+  try {
+    const original = db.prepare(`
+      SELECT pq.*, pi.project_id as invitation_project_id, pi.pqq_template_id, pi.invitee_id
+      FROM pqq_submissions pq
+      LEFT JOIN pqq_invitations pi ON pi.id = pq.invitation_id
+      WHERE pq.id = ?
+    `).get(req.params.id);
+    if (!original) return apiResponse(res, 404, null, 'PQQ submission not found');
+    if (original.company_id !== req.user.id && original.invitee_id !== req.user.id) {
+      return apiResponse(res, 403, null, 'You can only renew your own PQQ submission');
+    }
+    if (!original.pqq_template_id) {
+      return apiResponse(res, 400, null, 'Submission has no template link for renewal');
+    }
+
+    let existingAnswers = {};
+    try { existingAnswers = JSON.parse(original.answers_json || '{}'); } catch (_) { existingAnswers = {}; }
+    const providedAnswers = typeof req.body?.answers === 'object' && req.body?.answers
+      ? req.body.answers
+      : existingAnswers;
+
+    const templateMeta = db.prepare(`
+      SELECT m.*, t.id as template_id FROM pqq_templates t
+      LEFT JOIN pqq_template_metadata m ON m.template_id = t.id
+      WHERE t.id = ?
+    `).get(original.pqq_template_id);
+    const templateSections = db.prepare(`
+      SELECT section_id, section_title, pass_threshold, scoring_type, max_points
+      FROM pqq_template_sections
+      WHERE template_id = ?
+      ORDER BY display_order, section_number
+    `).all(original.pqq_template_id);
+    const templateQuestions = db.prepare(`
+      SELECT question_id, section_id, question_text, question_type, required, points, validation_rule, validation_value, autofail_if_yes, apply_bonus_if_no
+      FROM pqq_template_questions
+      WHERE template_id = ?
+      ORDER BY section_id, question_number
+    `).all(original.pqq_template_id);
+    const scoreResult = templateQuestions.length > 0
+      ? evaluatePQQ(templateMeta || {}, templateSections, templateQuestions, providedAnswers)
+      : { total_score: 0, overall_status: 'amber', section_scores: [], failures: [] };
+
+    const sectionScores = scoreResult.section_scores || [];
+    const hasRequiredMissing = sectionScores.some((s) => !!s.required_missing);
+    const hardFailSections = sectionScores.filter((s) => s.scoring_type === 'pass_fail' && !s.passed).length;
+    const financialData = JSON.stringify({
+      score: scoreResult.total_score || 0,
+      status: scoreResult.overall_status || 'amber',
+    });
+    const complianceData = JSON.stringify({
+      requiredComplete: !hasRequiredMissing,
+      hardFail: !!scoreResult.hard_fail,
+      hardFailSections,
+      failedSections: (scoreResult.failures || []).length,
+    });
+
+    const newSubmissionId = uuidv4();
+    db.prepare(`
+      INSERT INTO pqq_submissions (id, invitation_id, company_id, project_id, submitted_by, status, company_profile, financial_status, compliance_status, answers_json, section_scores_json, total_score, overall_status, documents)
+      VALUES (?, ?, ?, ?, ?, 'under_review', ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      newSubmissionId,
+      original.invitation_id || null,
+      req.user.id,
+      original.project_id || original.invitation_project_id || null,
+      req.user.id,
+      original.company_profile || null,
+      financialData,
+      complianceData,
+      JSON.stringify(providedAnswers || {}),
+      JSON.stringify(scoreResult.section_scores || []),
+      scoreResult.total_score || 0,
+      scoreResult.overall_status || null,
+      original.documents || null
+    );
+
+    if (original.invitation_id) {
+      db.prepare(`
+        UPDATE pqq_invitations
+        SET status = 'under_review', pqq_submission_id = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).run(newSubmissionId, original.invitation_id);
+    }
+
+    const auditId = uuidv4();
+    const blockchainResult = MockBlockchain.anchorData({
+      action: 'pqq_renewed',
+      previousSubmissionId: original.id,
+      newSubmissionId,
+    });
+    db.prepare(`
+      INSERT INTO audit_log (id, actor_id, action, entity_type, entity_id, details, blockchain_tx, hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      auditId,
+      req.user.id,
+      'pqq_renewed',
+      'pqq',
+      newSubmissionId,
+      JSON.stringify({ renewed_from: original.id }),
+      blockchainResult.transactionId,
+      blockchainResult.dataHash
+    );
+
+    return apiResponse(res, 201, {
+      id: newSubmissionId,
+      renewed_from: original.id,
+      status: 'under_review',
+      total_score: scoreResult.total_score || 0,
+      overall_status: scoreResult.overall_status || null,
+      failures: scoreResult.failures || [],
+    }, 'PQQ renewed and resubmitted');
+  } catch (error) {
+    console.error('Renew PQQ error:', error);
     return apiResponse(res, 500, null, 'Internal server error');
   }
 });
