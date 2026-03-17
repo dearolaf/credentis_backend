@@ -971,7 +971,15 @@ router.post('/pqq/:id/renew', authenticate, requireRole('contractor', 'subcontra
     if (original.company_id !== req.user.id && original.invitee_id !== req.user.id) {
       return apiResponse(res, 403, null, 'You can only renew your own PQQ submission');
     }
-    if (!original.pqq_template_id) {
+    if (original.status === 'under_review') {
+      return apiResponse(res, 409, null, 'This submission is already under review and cannot be renewed yet');
+    }
+    let templateId = original.pqq_template_id;
+    if (!templateId && original.project_id) {
+      const projectTemplate = db.prepare('SELECT pqq_template_id FROM projects WHERE id = ?').get(original.project_id);
+      templateId = projectTemplate?.pqq_template_id || null;
+    }
+    if (!templateId) {
       return apiResponse(res, 400, null, 'Submission has no template link for renewal');
     }
 
@@ -985,19 +993,19 @@ router.post('/pqq/:id/renew', authenticate, requireRole('contractor', 'subcontra
       SELECT m.*, t.id as template_id FROM pqq_templates t
       LEFT JOIN pqq_template_metadata m ON m.template_id = t.id
       WHERE t.id = ?
-    `).get(original.pqq_template_id);
+    `).get(templateId);
     const templateSections = db.prepare(`
       SELECT section_id, section_title, pass_threshold, scoring_type, max_points
       FROM pqq_template_sections
       WHERE template_id = ?
       ORDER BY display_order, section_number
-    `).all(original.pqq_template_id);
+    `).all(templateId);
     const templateQuestions = db.prepare(`
       SELECT question_id, section_id, question_text, question_type, required, points, validation_rule, validation_value, autofail_if_yes, apply_bonus_if_no
       FROM pqq_template_questions
       WHERE template_id = ?
       ORDER BY section_id, question_number
-    `).all(original.pqq_template_id);
+    `).all(templateId);
     const scoreResult = templateQuestions.length > 0
       ? evaluatePQQ(templateMeta || {}, templateSections, templateQuestions, providedAnswers)
       : { total_score: 0, overall_status: 'amber', section_scores: [], failures: [] };
@@ -1016,24 +1024,30 @@ router.post('/pqq/:id/renew', authenticate, requireRole('contractor', 'subcontra
       failedSections: (scoreResult.failures || []).length,
     });
 
-    const newSubmissionId = uuidv4();
     db.prepare(`
-      INSERT INTO pqq_submissions (id, invitation_id, company_id, project_id, submitted_by, status, company_profile, financial_status, compliance_status, answers_json, section_scores_json, total_score, overall_status, documents)
-      VALUES (?, ?, ?, ?, ?, 'under_review', ?, ?, ?, ?, ?, ?, ?, ?)
+      UPDATE pqq_submissions
+      SET
+        status = 'under_review',
+        submitted_by = ?,
+        financial_status = ?,
+        compliance_status = ?,
+        answers_json = ?,
+        section_scores_json = ?,
+        total_score = ?,
+        overall_status = ?,
+        reviewed_by = NULL,
+        review_notes = NULL,
+        updated_at = datetime('now')
+      WHERE id = ?
     `).run(
-      newSubmissionId,
-      original.invitation_id || null,
       req.user.id,
-      original.project_id || original.invitation_project_id || null,
-      req.user.id,
-      original.company_profile || null,
       financialData,
       complianceData,
       JSON.stringify(providedAnswers || {}),
       JSON.stringify(scoreResult.section_scores || []),
       scoreResult.total_score || 0,
       scoreResult.overall_status || null,
-      original.documents || null
+      original.id
     );
 
     if (original.invitation_id) {
@@ -1041,14 +1055,14 @@ router.post('/pqq/:id/renew', authenticate, requireRole('contractor', 'subcontra
         UPDATE pqq_invitations
         SET status = 'under_review', pqq_submission_id = ?, updated_at = datetime('now')
         WHERE id = ?
-      `).run(newSubmissionId, original.invitation_id);
+      `).run(original.id, original.invitation_id);
     }
 
     const auditId = uuidv4();
     const blockchainResult = MockBlockchain.anchorData({
       action: 'pqq_renewed',
-      previousSubmissionId: original.id,
-      newSubmissionId,
+      submissionId: original.id,
+      mode: 'in_place_resubmission',
     });
     db.prepare(`
       INSERT INTO audit_log (id, actor_id, action, entity_type, entity_id, details, blockchain_tx, hash)
@@ -1058,14 +1072,14 @@ router.post('/pqq/:id/renew', authenticate, requireRole('contractor', 'subcontra
       req.user.id,
       'pqq_renewed',
       'pqq',
-      newSubmissionId,
-      JSON.stringify({ renewed_from: original.id }),
+      original.id,
+      JSON.stringify({ renewed_from: original.id, mode: 'in_place_resubmission' }),
       blockchainResult.transactionId,
       blockchainResult.dataHash
     );
 
-    return apiResponse(res, 201, {
-      id: newSubmissionId,
+    return apiResponse(res, 200, {
+      id: original.id,
       renewed_from: original.id,
       status: 'under_review',
       total_score: scoreResult.total_score || 0,
