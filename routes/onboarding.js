@@ -274,6 +274,62 @@ router.get('/templates/:id', authenticate, (req, res, next) => {
 });
 
 /**
+ * DELETE /api/onboarding/templates/:id - Delete an imported PQQ template
+ */
+router.delete('/templates/:id', authenticate, requireRole('client', 'admin'), (req, res, next) => {
+  try {
+    if (req.params.id === 'import-history') return next();
+    const templateId = req.params.id;
+    const template = db.prepare('SELECT id, name FROM pqq_templates WHERE id = ?').get(templateId);
+    if (!template) return apiResponse(res, 404, null, 'Template not found');
+
+    const linkedProjects = db.prepare('SELECT COUNT(*) as count FROM projects WHERE pqq_template_id = ?').get(templateId)?.count || 0;
+    const linkedInvitations = db.prepare('SELECT COUNT(*) as count FROM pqq_invitations WHERE pqq_template_id = ?').get(templateId)?.count || 0;
+    if (linkedProjects > 0 || linkedInvitations > 0) {
+      return apiResponse(
+        res,
+        409,
+        null,
+        'Template cannot be deleted because it is in use by projects or invitations'
+      );
+    }
+
+    const runDelete = db.transaction((id) => {
+      db.prepare('DELETE FROM pqq_template_questions WHERE template_id = ?').run(id);
+      db.prepare('DELETE FROM pqq_template_sections WHERE template_id = ?').run(id);
+      db.prepare('DELETE FROM pqq_expiry_tracking_config WHERE template_id = ?').run(id);
+      db.prepare('DELETE FROM pqq_template_metadata WHERE template_id = ?').run(id);
+      db.prepare('DELETE FROM pqq_templates WHERE id = ?').run(id);
+    });
+    runDelete(templateId);
+
+    const auditId = uuidv4();
+    const blockchainResult = MockBlockchain.anchorData({
+      action: 'pqq_template_deleted',
+      templateId,
+    });
+    db.prepare(`
+      INSERT INTO audit_log (id, actor_id, action, entity_type, entity_id, details, blockchain_tx, hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      auditId,
+      req.user.id,
+      'pqq_template_deleted',
+      'pqq_template',
+      templateId,
+      JSON.stringify({ template_name: template.name }),
+      blockchainResult.transactionId,
+      blockchainResult.dataHash
+    );
+
+    return apiResponse(res, 200, { id: templateId }, 'PQQ template deleted');
+  } catch (error) {
+    console.error('Delete template error:', error);
+    return apiResponse(res, 500, null, error.message || 'Internal server error');
+  }
+});
+
+/**
  * GET /api/onboarding/templates/import-history - recent template imports
  */
 router.get('/templates/import-history', authenticate, requireRole('client', 'admin'), (req, res) => {
