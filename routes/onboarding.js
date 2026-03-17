@@ -345,6 +345,7 @@ router.get('/templates/import-history', authenticate, requireRole('client', 'adm
         u.last_name,
         u.email
       FROM audit_log al
+      JOIN pqq_templates t ON t.id = al.entity_id
       LEFT JOIN users u ON u.id = al.actor_id
       WHERE al.action = 'pqq_template_imported'
       ORDER BY al.created_at DESC
