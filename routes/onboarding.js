@@ -629,15 +629,8 @@ router.post('/pqq', authenticate, requireRole('contractor', 'subcontractor'), (r
     if (inv.status !== 'invited') return apiResponse(res, 400, null, 'PQQ already submitted or processed for this invitation');
 
     const id = uuidv4();
-    let financialData, complianceData;
-    if (financial_status) {
-      financialData = typeof financial_status === 'string' ? financial_status : JSON.stringify(financial_status);
-      complianceData = typeof compliance_status === 'string' ? compliance_status : JSON.stringify(compliance_status || {});
-    } else {
-      const pqqResult = mockPQQCheck(company_profile);
-      financialData = JSON.stringify(pqqResult.financialHealth);
-      complianceData = JSON.stringify(pqqResult.complianceFlags);
-    }
+    let financialData;
+    let complianceData;
 
     const templateMeta = db.prepare(`
       SELECT m.*, t.id as template_id FROM pqq_templates t
@@ -661,6 +654,29 @@ router.post('/pqq', authenticate, requireRole('contractor', 'subcontractor'), (r
     const scoreResult = templateQuestions.length > 0
       ? evaluatePQQ(templateMeta || {}, templateSections, templateQuestions, providedAnswers)
       : { total_score: 0, overall_status: 'amber', section_scores: [], failures: [] };
+
+    if (financial_status) {
+      financialData = typeof financial_status === 'string' ? financial_status : JSON.stringify(financial_status);
+      complianceData = typeof compliance_status === 'string' ? compliance_status : JSON.stringify(compliance_status || {});
+    } else if (Object.keys(providedAnswers).length > 0) {
+      const sectionScores = scoreResult.section_scores || [];
+      const hasRequiredMissing = sectionScores.some((s) => !!s.required_missing);
+      const hardFailSections = sectionScores.filter((s) => s.scoring_type === 'pass_fail' && !s.passed).length;
+      financialData = JSON.stringify({
+        score: scoreResult.total_score || 0,
+        status: scoreResult.overall_status || 'amber',
+      });
+      complianceData = JSON.stringify({
+        requiredComplete: !hasRequiredMissing,
+        hardFail: !!scoreResult.hard_fail,
+        hardFailSections,
+        failedSections: (scoreResult.failures || []).length,
+      });
+    } else {
+      const pqqResult = mockPQQCheck(company_profile);
+      financialData = JSON.stringify(pqqResult.financialHealth);
+      complianceData = JSON.stringify(pqqResult.complianceFlags);
+    }
 
     db.prepare(`
       INSERT INTO pqq_submissions (id, invitation_id, company_id, project_id, submitted_by, status, company_profile, financial_status, compliance_status, answers_json, section_scores_json, total_score, overall_status, documents)
