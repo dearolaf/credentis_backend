@@ -775,15 +775,119 @@ router.get('/pqq', authenticate, (req, res) => {
         JOIN users u ON u.id = pq.company_id
         ORDER BY pq.created_at DESC
       `).all();
+    } else if (req.user.role === 'contractor') {
+      pqqs = db.prepare(`
+        SELECT DISTINCT pq.*, u.company_name, u.first_name, u.last_name
+        FROM pqq_submissions pq
+        JOIN users u ON u.id = pq.company_id
+        LEFT JOIN pqq_invitations pi ON pi.id = pq.invitation_id
+        WHERE pq.company_id = ? OR pi.inviter_id = ?
+        ORDER BY pq.created_at DESC
+      `).all(req.user.id, req.user.id);
     } else {
       pqqs = db.prepare(`
-        SELECT * FROM pqq_submissions WHERE company_id = ? ORDER BY created_at DESC
+        SELECT pq.*, u.company_name, u.first_name, u.last_name
+        FROM pqq_submissions pq
+        JOIN users u ON u.id = pq.company_id
+        WHERE pq.company_id = ?
+        ORDER BY pq.created_at DESC
       `).all(req.user.id);
     }
 
     return apiResponse(res, 200, pqqs, 'PQQ submissions retrieved');
   } catch (error) {
     console.error('Get PQQs error:', error);
+    return apiResponse(res, 500, null, 'Internal server error');
+  }
+});
+
+/**
+ * GET /api/onboarding/pqq/:id - Single submission with answers + template (read-only detail)
+ */
+router.get('/pqq/:id', authenticate, (req, res) => {
+  try {
+    const id = req.params.id;
+    const sub = db.prepare(`
+      SELECT pq.*, u.company_name, u.first_name, u.last_name
+      FROM pqq_submissions pq
+      LEFT JOIN users u ON u.id = pq.company_id
+      WHERE pq.id = ?
+    `).get(id);
+    if (!sub) return apiResponse(res, 404, null, 'PQQ submission not found');
+
+    let allowed = false;
+    if (req.user.role === 'admin') allowed = true;
+    else if (sub.company_id === req.user.id) allowed = true;
+    else if (req.user.role === 'client' || req.user.role === 'contractor') {
+      const project = sub.project_id
+        ? db.prepare('SELECT client_id, pqq_template_id FROM projects WHERE id = ?').get(sub.project_id)
+        : null;
+      if (project && project.client_id === req.user.id) allowed = true;
+      if (sub.invitation_id) {
+        const inv = db.prepare('SELECT inviter_id FROM pqq_invitations WHERE id = ?').get(sub.invitation_id);
+        if (inv && inv.inviter_id === req.user.id) allowed = true;
+      }
+    }
+    if (!allowed) return apiResponse(res, 403, null, 'You cannot view this PQQ submission');
+
+    let templateId = null;
+    if (sub.invitation_id) {
+      const inv = db.prepare('SELECT pqq_template_id FROM pqq_invitations WHERE id = ?').get(sub.invitation_id);
+      if (inv?.pqq_template_id) templateId = inv.pqq_template_id;
+    }
+    if (!templateId && sub.project_id) {
+      const proj = db.prepare('SELECT pqq_template_id FROM projects WHERE id = ?').get(sub.project_id);
+      if (proj?.pqq_template_id) templateId = proj.pqq_template_id;
+    }
+
+    let template = null;
+    let sections = [];
+    let questions = [];
+    if (templateId) {
+      template = db.prepare(`
+        SELECT t.id, t.name, t.sections,
+          m.template_version, m.standard_alignment, m.project_type, m.min_project_value,
+          m.total_sections, m.total_questions, m.max_score, m.pass_threshold,
+          m.default_deadline_days, m.status, m.created_date, m.last_modified
+        FROM pqq_templates t
+        LEFT JOIN pqq_template_metadata m ON m.template_id = t.id
+        WHERE t.id = ?
+      `).get(templateId);
+      if (template) {
+        sections = db.prepare(`
+          SELECT section_id, section_number, section_title, max_points, pass_threshold, scoring_type, display_order, description, calculation_method, notes
+          FROM pqq_template_sections
+          WHERE template_id = ?
+          ORDER BY display_order, section_number
+        `).all(templateId);
+        questions = db.prepare(`
+          SELECT question_id, section_id, question_number, question_text, question_type, data_type, required, points,
+            validation_rule, validation_value, autofail_if_yes, apply_amber_if_yes, apply_bonus_if_no,
+            apply_afr_red_days, apply_afr_amber_days, evidence_required
+          FROM pqq_template_questions
+          WHERE template_id = ?
+          ORDER BY section_id, question_number
+        `).all(templateId);
+      }
+    }
+
+    let answers = {};
+    try {
+      answers = sub.answers_json ? JSON.parse(sub.answers_json) : {};
+    } catch (e) {
+      answers = {};
+    }
+
+    const { answers_json: _aj, ...submissionRest } = sub;
+    return apiResponse(res, 200, {
+      submission: submissionRest,
+      answers,
+      template,
+      sections,
+      questions,
+    }, 'PQQ submission detail retrieved');
+  } catch (error) {
+    console.error('Get PQQ detail error:', error);
     return apiResponse(res, 500, null, 'Internal server error');
   }
 });
@@ -842,19 +946,25 @@ router.put('/pqq/:id/review', authenticate, requireRole('client', 'contractor', 
 router.get('/pqq/:id/expiry-alerts', authenticate, (req, res) => {
   try {
     const submission = db.prepare(`
-      SELECT pq.id, pq.company_id, pq.project_id, pq.answers_json, pi.pqq_template_id
+      SELECT pq.id, pq.company_id, pq.project_id, pq.invitation_id, pq.answers_json, pi.pqq_template_id
       FROM pqq_submissions pq
       LEFT JOIN pqq_invitations pi ON pi.id = pq.invitation_id
       WHERE pq.id = ?
     `).get(req.params.id);
     if (!submission) return apiResponse(res, 404, null, 'PQQ submission not found');
     if (req.user.role !== 'admin' && req.user.id !== submission.company_id) {
-      const invitation = submission.id
-        ? db.prepare('SELECT inviter_id FROM pqq_invitations WHERE pqq_submission_id = ?').get(submission.id)
+      const project = submission.project_id
+        ? db.prepare('SELECT client_id FROM projects WHERE id = ?').get(submission.project_id)
         : null;
-      const project = db.prepare('SELECT client_id FROM projects WHERE id = ?').get(submission.project_id);
-      const isClientOwner = !!project && project.client_id === req.user.id;
-      const isInvitationOwner = !!invitation && invitation.inviter_id === req.user.id;
+      let invitation = null;
+      if (submission.invitation_id) {
+        invitation = db.prepare('SELECT inviter_id FROM pqq_invitations WHERE id = ?').get(submission.invitation_id);
+      }
+      if (!invitation && submission.id) {
+        invitation = db.prepare('SELECT inviter_id FROM pqq_invitations WHERE pqq_submission_id = ?').get(submission.id);
+      }
+      const isClientOwner = !!(project && project.client_id === req.user.id);
+      const isInvitationOwner = !!(invitation && invitation.inviter_id === req.user.id);
       if (!isClientOwner && !isInvitationOwner) return apiResponse(res, 403, null, 'Forbidden');
     }
 

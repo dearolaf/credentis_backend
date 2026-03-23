@@ -336,6 +336,32 @@ const assignmentData = db.transaction(() => {
 assignmentData();
 console.log(`✓ Created ${workerAssignments.length} worker-project assignments`);
 
+// Sean Murphy must be on the demo VP (projects[0]) where PQQ/DAR are seeded; random assignments can skip it → empty DAR in app/profile.
+const seanMurphy = users.workers[0];
+const demoVp = projects[0];
+const seanOnDemoVp = db.prepare(
+  'SELECT id FROM project_assignments WHERE worker_id = ? AND project_id = ?'
+).get(seanMurphy.id, demoVp.id);
+if (!seanOnDemoVp) {
+  const aid = uuidv4();
+  const endorser = users.contractors[0];
+  insertAssignment.run(
+    aid,
+    demoVp.id,
+    seanMurphy.id,
+    endorser.id,
+    'Electrical Engineer',
+    demoVp.start_date,
+    demoVp.end_date,
+    'active',
+    'none',
+    null,
+    null
+  );
+  workerAssignments.push({ id: aid, projectIdx: 0, workerIdx: 0, status: 'active' });
+  console.log('✓ Added Sean Murphy → West Dublin VP assignment (DAR requirements apply)');
+}
+
 // ===== CREDENTIALS =====
 // Irish construction and data centre context: SOLAS, HSA, ESB, QQI, Irish institutions only.
 const credentialTypes = [
@@ -708,7 +734,8 @@ insertDAR.run(uuidv4(), vp.id, sub1.id, 'professional_academic_qualifications', 
 console.log('✓ Created DAR requirements (Client → Contractor → Subcontractors)');
 
 // ===== DAR SATISFACTION =====
-// Intentionally not pre-seeding Sean DAR/RTW satisfaction so live verification flow can be demonstrated.
+// Intentionally not pre-seeding Sean's worker_dar_satisfaction rows so issue/satisfy flows can be demonstrated live.
+// Sean is guaranteed an assignment to projects[0] (West Dublin VP) where DAR requirements exist — see assignment block above.
 
 // ===== AUDIT LOG ENTRIES =====
 const insertAudit = db.prepare(`
