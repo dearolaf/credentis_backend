@@ -372,6 +372,7 @@ db.exec(`
     dar_requirement_id TEXT NOT NULL,
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'satisfied', 'rejected')),
     credential_id TEXT,
+    credential_ids_json TEXT,
     submitted_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(worker_id, dar_requirement_id),
@@ -417,6 +418,13 @@ try {
   const pacols = db.prepare("PRAGMA table_info(project_assignments)").all();
   if (pacols.length && !pacols.find(c => c.name === 'dar_requested_at')) {
     db.exec('ALTER TABLE project_assignments ADD COLUMN dar_requested_at TEXT');
+  }
+} catch (_) {}
+// Migration: multiple credentials per DAR satisfaction (e.g. professional + academic quals)
+try {
+  const wdCols = db.prepare('PRAGMA table_info(worker_dar_satisfaction)').all();
+  if (wdCols.length && !wdCols.find((c) => c.name === 'credential_ids_json')) {
+    db.exec('ALTER TABLE worker_dar_satisfaction ADD COLUMN credential_ids_json TEXT');
   }
 } catch (_) {}
 // Migration: supporting_info on project_assignments (application details from professional app)

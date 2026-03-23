@@ -26,7 +26,7 @@ function getDarRequirementsForWorker(workerId, projectId) {
   `).all(projectId);
 
   const satisfactions = db.prepare(`
-    SELECT dar_requirement_id, status, credential_id, submitted_at
+    SELECT dar_requirement_id, status, credential_id, credential_ids_json, submitted_at
     FROM worker_dar_satisfaction
     WHERE worker_id = ? AND project_id = ?
   `).all(workerId, projectId);
@@ -46,11 +46,21 @@ function getDarRequirementsForWorker(workerId, projectId) {
         : row?.status === 'pending' ? 'issued'
           : 'not_issued';
     }
+    let credentialIds = [];
+    if (row?.credential_ids_json) {
+      try {
+        const parsed = JSON.parse(row.credential_ids_json);
+        if (Array.isArray(parsed)) credentialIds = parsed.filter(Boolean);
+      } catch (_) { /* ignore */ }
+    }
+    if (credentialIds.length === 0 && row?.credential_id) credentialIds = [row.credential_id];
+
     return {
       ...r,
       my_status: myStatus,
       can_act: myStatus === 'issued',
       credential_id: row?.credential_id ?? null,
+      credential_ids: credentialIds,
       submitted_at: row?.submitted_at ?? null,
     };
   });
@@ -146,7 +156,7 @@ router.get('/my-requirements', authenticate, requireRole('worker'), (req, res) =
  */
 router.post('/satisfy', authenticate, requireRole('worker'), (req, res) => {
   try {
-    const { project_id, dar_requirement_id, credential_id } = req.body;
+    const { project_id, dar_requirement_id, credential_id, credential_ids } = req.body;
     if (!project_id || !dar_requirement_id) return apiResponse(res, 400, null, 'project_id and dar_requirement_id required');
 
     const requirement = db.prepare('SELECT id, project_id, requirement_key FROM project_dar_requirements WHERE id = ? AND project_id = ?').get(dar_requirement_id, project_id);
@@ -160,21 +170,42 @@ router.post('/satisfy', authenticate, requireRole('worker'), (req, res) => {
     }
 
     const existing = db.prepare('SELECT id, status FROM worker_dar_satisfaction WHERE worker_id = ? AND dar_requirement_id = ?').get(req.user.id, dar_requirement_id);
-    const credId = requirement.requirement_key === 'rtw' ? null : (credential_id || null);
+
+    let credentialIdList = [];
+    if (requirement.requirement_key !== 'rtw') {
+      if (Array.isArray(credential_ids) && credential_ids.length > 0) {
+        credentialIdList = [...new Set(credential_ids.map((x) => String(x).trim()).filter(Boolean))];
+      } else if (credential_id) {
+        credentialIdList = [String(credential_id)];
+      }
+      for (const cid of credentialIdList) {
+        const row = db.prepare('SELECT id FROM credentials WHERE id = ? AND worker_id = ?').get(cid, req.user.id);
+        if (!row) {
+          return apiResponse(res, 400, null, `Credential not found or not yours: ${cid}`);
+        }
+      }
+    }
+
+    const primaryCredId = credentialIdList.length > 0 ? credentialIdList[0] : null;
+    const credIdsJson = credentialIdList.length > 0 ? JSON.stringify(credentialIdList) : null;
 
     if (existing) {
       db.prepare(`
-        UPDATE worker_dar_satisfaction SET status = 'satisfied', credential_id = ?, submitted_at = datetime('now') WHERE id = ?
-      `).run(credId, existing.id);
+        UPDATE worker_dar_satisfaction SET status = 'satisfied', credential_id = ?, credential_ids_json = ?, submitted_at = datetime('now') WHERE id = ?
+      `).run(primaryCredId, credIdsJson, existing.id);
     } else {
       const id = uuidv4();
       db.prepare(`
-        INSERT INTO worker_dar_satisfaction (id, worker_id, project_id, dar_requirement_id, status, credential_id, submitted_at)
-        VALUES (?, ?, ?, ?, 'satisfied', ?, datetime('now'))
-      `).run(id, req.user.id, project_id, dar_requirement_id, credId);
+        INSERT INTO worker_dar_satisfaction (id, worker_id, project_id, dar_requirement_id, status, credential_id, credential_ids_json, submitted_at)
+        VALUES (?, ?, ?, ?, 'satisfied', ?, ?, datetime('now'))
+      `).run(id, req.user.id, project_id, dar_requirement_id, primaryCredId, credIdsJson);
     }
 
-    return apiResponse(res, 200, { dar_requirement_id, status: 'satisfied' }, 'Requirement marked as satisfied');
+    return apiResponse(res, 200, {
+      dar_requirement_id,
+      status: 'satisfied',
+      credential_ids: credentialIdList,
+    }, 'Requirement submitted');
   } catch (error) {
     console.error('Satisfy DAR error:', error);
     return apiResponse(res, 500, null, 'Internal server error');

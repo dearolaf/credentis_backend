@@ -38,16 +38,27 @@ router.get('/', authenticate, (req, res) => {
 
     // Which DAR requirements does each credential satisfy? (professional/academic quals as VCs, visible up the chain)
     const darSatisfactions = db.prepare(`
-      SELECT wds.credential_id, wds.project_id, d.label as requirement_label, p.title as project_title
+      SELECT wds.credential_id, wds.credential_ids_json, wds.project_id, d.label as requirement_label, p.title as project_title
       FROM worker_dar_satisfaction wds
       JOIN project_dar_requirements d ON d.id = wds.dar_requirement_id
       JOIN projects p ON p.id = wds.project_id
-      WHERE wds.worker_id = ? AND wds.credential_id IS NOT NULL AND wds.status = 'satisfied'
+      WHERE wds.worker_id = ? AND wds.status = 'satisfied'
+        AND (wds.credential_id IS NOT NULL OR (wds.credential_ids_json IS NOT NULL AND length(trim(wds.credential_ids_json)) > 2))
     `).all(workerId);
     const darByCredId = {};
-    darSatisfactions.forEach(row => {
-      if (!darByCredId[row.credential_id]) darByCredId[row.credential_id] = [];
-      darByCredId[row.credential_id].push({ project_title: row.project_title, requirement_label: row.requirement_label });
+    darSatisfactions.forEach((row) => {
+      const ids = new Set();
+      if (row.credential_id) ids.add(row.credential_id);
+      if (row.credential_ids_json) {
+        try {
+          const parsed = JSON.parse(row.credential_ids_json);
+          if (Array.isArray(parsed)) parsed.forEach((id) => { if (id) ids.add(String(id)); });
+        } catch (_) { /* ignore */ }
+      }
+      ids.forEach((cid) => {
+        if (!darByCredId[cid]) darByCredId[cid] = [];
+        darByCredId[cid].push({ project_title: row.project_title, requirement_label: row.requirement_label });
+      });
     });
 
     // Get worker's project assignments to associate credentials with projects
