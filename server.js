@@ -43,6 +43,7 @@ app.use('/api/audit', require('./routes/audit'));
 app.use('/api/onboarding', require('./routes/onboarding'));
 app.use('/api/dar', require('./routes/dar'));
 app.use('/api/consent', require('./routes/consent'));
+app.use('/api/demo', require('./routes/demo'));
 
 // Health check
 app.get('/api/health', (req, res) => {
